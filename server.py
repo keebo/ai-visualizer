@@ -21,7 +21,7 @@
 Serves the face gallery at http://127.0.0.1:8790/ and exposes:
 
   /state   polled by the faces (~8x/sec):
-           {"state":  "idle|listening|thinking|speaking",
+           {"state":  "idle|listening|thinking|working|speaking",
             "level":  0.0-1.0,       voice loudness while speaking
             "samples": [64 floats],  raw waveform snapshot (0s when quiet)
             "alert":  bool,          optional attention signal
@@ -35,10 +35,27 @@ Serves the face gallery at http://127.0.0.1:8790/ and exposes:
 READ-ONLY on the signal bus. The bus is three tiny files written by a
 voice line (backtalk writes them natively, github.com/jaredrhod/backtalk):
 
-  .voice_state        idle | listening | thinking | speaking
+  .voice_state        idle | listening | thinking | working | speaking
   .voice_waveform     JSON {ts, samples: [64 floats]} while audio plays
   .voice_loading_pid  exists while the voice line plays a thinking sound
   .voice_alert        optional: non-empty file = attention needed
+
+"working" is a tool call actually running (a file write, a shell
+command, a dispatched subagent) — distinct from "thinking", which is
+the model composing with nothing to show yet.
+
+BACKGROUND JOBS (anything outside a live model turn): drop any file
+into a "background/" folder next to the bus files while your job runs,
+and remove it when done — no Python, no API, works from a plain shell
+script:
+
+  mkdir -p background && touch background/my-job    # starting
+  rm -f background/my-job                           # finished
+
+While ANY file sits in that folder, /state reports "working" instead
+of "idle" (a live turn's own state always takes priority). A marker
+older than 6 hours is ignored, so a job that crashed without cleaning
+up can't wedge the face in "working" forever.
 
 Where the bus lives comes from "bus_dir" in ai-visualizer.json (default:
 this folder). Point it at your backtalk folder, or point backtalk's
@@ -49,7 +66,8 @@ Run:
   python3 server.py --mock speaking
                                 no voice line needed: /state synthesizes
                                 the chosen state (idle|listening|thinking
-                                |speaking) so you can see a face perform
+                                |working|speaking) so you can see a face
+                                perform
   python3 server.py --no-open   do not auto-open the browser
 Ctrl-C stops.
 """
@@ -66,8 +84,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-STATES = {"idle", "listening", "thinking", "speaking"}
+STATES = {"idle", "listening", "thinking", "working", "speaking"}
 WAVEFORM_STALE_S = 0.6
+BG_STALE_S = 6 * 60 * 60   # ignore a marker file older than this (orphaned by a crash)
 
 DEFAULTS = {
     "name": "JARVIS",       # shown on the chip / headers, yours to change
@@ -95,6 +114,7 @@ def load_config():
 
 CFG = load_config()
 BUS = Path(CFG["bus_dir"]).expanduser() if CFG.get("bus_dir") else HERE
+BG_DIR = BUS / "background"
 
 MOCK = None
 NO_OPEN = "--no-open" in sys.argv
@@ -138,13 +158,23 @@ def mock_bus():
             for i in range(64)
         ]
     return {"state": MOCK, "level": level, "samples": samples,
-            "alert": False, "loading": MOCK == "thinking",
+            "alert": False, "loading": MOCK in ("thinking", "working"),
             # Faked so the usage readout can be looked at without
             # spending a real session to make it appear.
             "rate_limits": {
                 "five_hour": {"utilization": 0.34, "resets_at": t + 9200},
                 "seven_day": {"utilization": 0.61, "resets_at": t + 288000},
             }}
+
+
+def _background_job_active():
+    """Any live (non-stale) file in BG_DIR counts as work in progress."""
+    try:
+        now = time.time()
+        return any(now - p.stat().st_mtime < BG_STALE_S
+                   for p in BG_DIR.iterdir())
+    except OSError:
+        return False
 
 
 def read_bus():
@@ -156,6 +186,8 @@ def read_bus():
             state = "idle"
     except OSError:
         state = "idle"
+    if state == "idle" and _background_job_active():
+        state = "working"
     level = 0.0
     samples = [0.0] * 64
     try:

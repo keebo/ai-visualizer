@@ -46,6 +46,10 @@ SPDX-License-Identifier: AGPL-3.0-or-later
               constellation stars — alive, never frozen
    listening / thinking
               an amber data-tick wheel + rotating HUD arcs
+   working    a tool is actually running: a hot-orange mechanical
+              spinner ring, steady and grinding — deliberately NOT
+              the amber drift of thinking, so a tool call reads as
+              distinct work rather than composing
    speaking   the starburst erupts on the live waveform and the
               orb explodes from the inside, per syllable
    alert      red pulsing rings + vignette
@@ -403,6 +407,28 @@ function drawTicks(cxp,cyp,innerR,fade,dt60){
     ctx.stroke();
   }
 }
+let workA=0;
+function drawWorkRing(cxp,cyp,innerR,fade,dt60){
+  workA+=.05*dt60;
+  if(fade<.01)return;
+  const radius=innerR*1.20, segs=16;
+  for(let i=0;i<segs;i++){
+    const a=workA+i*(6.2832/segs);
+    const alpha=(.5+.5*Math.sin(a*3))*fade*.9;
+    const len=innerR*.16;
+    const x1=cxp+Math.cos(a)*radius, y1=cyp+Math.sin(a)*radius;
+    const x2=cxp+Math.cos(a)*(radius+len), y2=cyp+Math.sin(a)*(radius+len);
+    ctx.strokeStyle=`rgba(255,110,40,${alpha})`;
+    ctx.lineWidth=4;
+    ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  }
+  // one solid arc sweeping steadily — reads as grinding, not drifting
+  ctx.strokeStyle=`rgba(255,90,30,${.85*fade})`;
+  ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.arc(cxp,cyp,innerR*1.05,workA*2,workA*2+Math.PI*.6);
+  ctx.stroke();
+}
 function drawHudArcs(cxp,cyp,innerR,fade){
   if(fade<.01)return;
   const specs=[[1.18,1,Math.PI*1.1,[255,200,90]],
@@ -485,7 +511,7 @@ function drawAlert(cxp,cyp,innerR,dt60){
 }
 
 /* ---------------- state fades + orb gate ---------------- */
-let rotation=0, idleFade=0, workingFade=0, breathPhase=0;
+let rotation=0, idleFade=0, workingFade=0, toolFade=0, breathPhase=0;
 let imgEnergy=0, orbEnergy=0, noiseFloor=.05, gateOpen=false, gateT0=null;
 let orbFont=null;
 
@@ -513,13 +539,15 @@ function frame(dt){
   /* state-driven fades: speaking = both off (bars + halo own the motion),
      listening/thinking = working ornaments, idle = idle ornaments */
   const st=AV.state;
-  let idleT=0,workT=0;
-  if(st==="speaking"){idleT=0;workT=0}
-  else if(st==="listening"||st==="thinking"){idleT=0;workT=1}
-  else{idleT=1;workT=0}
+  let idleT=0,workT=0,toolT=0;
+  if(st==="speaking"){idleT=0;workT=0;toolT=0}
+  else if(st==="listening"||st==="thinking"){idleT=0;workT=1;toolT=0}
+  else if(st==="working"){idleT=0;workT=0;toolT=1}
+  else{idleT=1;workT=0;toolT=0}
   const ease=(cur,tg,up)=>cur+(tg-cur)*(tg>cur?up:.30)*dt60;
   idleFade=ease(idleFade,idleT,.08);
   workingFade=ease(workingFade,workT,.12);
+  toolFade=ease(toolFade,toolT,.12);
   if(idleT>.5)drawSonar(cxp,cyp,innerR,maxLen,dt60);
 
   drawRings(cxp,cyp,innerR,maxLen);
@@ -571,6 +599,8 @@ function frame(dt){
   // working-state movement: data-tick wheel + HUD arcs
   drawTicks(cxp,cyp,innerR,workingFade,dt60);
   drawHudArcs(cxp,cyp,innerR,workingFade);
+  // a tool is actually running: hot-orange mechanical spinner
+  drawWorkRing(cxp,cyp,innerR,toolFade,dt60);
 
   /* ---- the starburst ---- */
   const thickness=Math.max(3,5*Math.min(W,H)/1200|0);

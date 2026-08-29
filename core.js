@@ -24,7 +24,7 @@
    It includes this script, calls AV.init(opts), then reads these
    fields every animation frame after calling AV.tick(dtMs):
 
-     AV.state      "idle" | "listening" | "thinking" | "speaking"
+     AV.state      "idle" | "listening" | "thinking" | "working" | "speaking"
      AV.level      0..1 raw voice loudness (speaking only)
      AV.env        0..1 smoothed speech envelope (attack/release eased,
                    adaptively normalized — use this for motion)
@@ -38,19 +38,19 @@
    Modes:
      live   served by server.py — rides the real signal bus
      demo   ?demo=1, or the page opened as a plain file — a scripted
-            voice-turn loop (idle, listening, thinking, speaking) with
-            synthesized audio, so every face performs with no voice
-            line installed
+            voice-turn loop (idle, listening, thinking, working,
+            speaking) with synthesized audio, so every face performs
+            with no voice line installed
      shot   ?shot=<state>&t=ms — pins one state and runs the frame
             loop deterministically, then sets document.title to
             "ready" (screenshot/verification harness)
 
    The thinking sound: assets/thinking.wav plays while the state is
-   "thinking", exactly like a voice line would play it. If the bus
-   says the voice line is already playing its own (.voice_loading_pid),
-   this player stays quiet — you never hear it twice. The speaker
-   button (bottom left) toggles it; browsers may require one click on
-   the page before audio is allowed.
+   "thinking" or "working", exactly like a voice line would play it.
+   If the bus says the voice line is already playing its own
+   (.voice_loading_pid), this player stays quiet — you never hear it
+   twice. The speaker button (bottom left) toggles it; browsers may
+   require one click on the page before audio is allowed.
    ============================================================ */
 "use strict";
 
@@ -105,7 +105,7 @@ const AV = (() => {
   /* ------------------------------ demo driver ------------------------------ */
   // A scripted voice turn: the face performs everything with no voice line.
   const SCRIPT = [["idle", 6000], ["listening", 3500], ["thinking", 4200],
-                  ["speaking", 8500]];
+                  ["working", 4200], ["speaking", 8500]];
   let demoT = 0, demoClock = 0;
   const PIN = SHOT || Q.get("state");   // ?state=speaking pins the demo
   function demoUpdate(dt) {
@@ -259,7 +259,8 @@ const AV = (() => {
   }
   function soundUpdate() {
     if (!audio || !A._sndWant) return;
-    const want = A._sndOn && A.state === "thinking" && !raw.loading;
+    const want = A._sndOn && (A.state === "thinking" || A.state === "working")
+      && !raw.loading;
     if (want && !playing) {
       playing = true;
       audio.currentTime = 0;

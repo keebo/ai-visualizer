@@ -46,7 +46,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
    State -> visual:
      idle       dim green rain, slow and hypnotic
      listening  rain dims, amber ribbon rides YOUR mic
-     thinking   rain accelerates + glitch bursts + status word
+     thinking   rain accelerates + green glitch bursts + status word
+     working    a tool is actually running: rain glitches in AMBER
+                 instead of green, with its own status word — so a
+                 background task reads as visibly different from the
+                 model just composing
      speaking   the face emerges, driven by the voice envelope
      alert      new glyphs bleed red + pulsing red frame
 
@@ -62,9 +66,11 @@ AV.init({mic:true});
 const GLYPH_PX=20, FACE_GLYPH_PX=12, TIERS=16;
 const GREEN=[0,255,70], HEAD=[205,255,205], AMBER=[255,176,64], RED=[255,46,46];
 const RAIN_FADE_PER_SEC=170, MUTATE_PER_SEC=45;
-const RAIN_PROFILE={idle:[1.0,.80],listening:[.55,.45],thinking:[2.6,1.0],speaking:[.85,.55]};
+const RAIN_PROFILE={idle:[1.0,.80],listening:[.55,.45],thinking:[2.6,1.0],
+                    working:[2.0,.85],speaking:[.85,.55]};
 const FACE_ATTACK=700, FACE_RELEASE=1500;
 const THINKING_WORDS=["PROCESSING","THINKING","QUERYING MEMORY","COMPILING RESPONSE","RUNNING IT DOWN"];
+const WORKING_WORDS=["RUNNING TOOL","WRITING FILE","EXECUTING","BUILDING","ON IT"];
 AV.ready(a=>{
   document.title=a.name+" Face in the Code";
 });
@@ -129,7 +135,7 @@ function buildAtlas(cellH,fams){
 let rain=null;
 class Rain{
   constructor(){
-    this.atlas=buildAtlas(GLYPH_PX,{green:GREEN,red:RED});
+    this.atlas=buildAtlas(GLYPH_PX,{green:GREEN,red:RED,amber:AMBER});
     [this.cw,this.chh]=this.atlas.cell;
     this.cols=Math.max(1,W/this.cw|0);
     this.rows=Math.max(1,(H/this.chh|0))+1;
@@ -145,7 +151,7 @@ class Rain{
       this.char.push(this.atlas.pick());
     }
   }
-  update(dt,state,alert,thinkAmt,now){
+  update(dt,state,alert,thinkAmt,workAmt,now){
     const[spdMult,headK]=RAIN_PROFILE[state]||RAIN_PROFILE.idle;
     // trail decay: a translucent black wash each frame fades every glyph
     // toward darkness, which is what draws the falling tails
@@ -191,10 +197,13 @@ class Rain{
           this.atlas.stamp(this.g,mid,this.atlas.pick(),c*this.cw,top*this.chh);
       }
     }
-    // thinking glitch bursts: short vertical runs stamped into the rain
-    if(thinkAmt>.05&&now>=this.glitchNext){
-      this.glitchNext=now+(60+Math.random()*160)/Math.max(thinkAmt,.2);
-      const bright=tiers[TIERS-1];
+    // thinking/working glitch bursts: short vertical runs stamped into the
+    // rain. Working uses the amber family so a running tool call reads as
+    // visibly distinct from the model just composing.
+    const glitchAmt=Math.max(thinkAmt,workAmt);
+    if(glitchAmt>.05&&now>=this.glitchNext){
+      this.glitchNext=now+(60+Math.random()*160)/Math.max(glitchAmt,.2);
+      const bright=(workAmt>thinkAmt?this.atlas.fams.amber:tiers)[TIERS-1];
       const n=1+(Math.random()*3|0);
       for(let k=0;k<n;k++){
         const c=Math.random()*this.cols|0;
@@ -309,8 +318,8 @@ class Face{
 
 /* ---------------- lettering + chrome ---------------- */
 const D=AV.util.Descrambler;
-let thinkLabel=null, stateTag=null, tagState="";
-let thinkingAmt=0, micHist=[], rainAlpha=0, now=0;
+let thinkLabel=null, workLabel=null, stateTag=null, tagState="";
+let thinkingAmt=0, workingAmt=0, micHist=[], rainAlpha=0, now=0;
 
 function drawRibbon(){
   micHist.push(AV.micLevel);
@@ -341,6 +350,19 @@ function drawThinking(dt){
   ctx.globalAlpha=1;ctx.textAlign="left";
 }
 
+function drawWorking(dt){
+  if(!workLabel||workLabel.done)
+    workLabel=new D(WORKING_WORDS[Math.random()*WORKING_WORDS.length|0],70,1400);
+  const txt=workLabel.render(dt);
+  const fs=Math.round(Math.min(W,H)*.06);
+  ctx.font=`${fs}px ${UI_FONT}`;
+  ctx.textAlign="center";ctx.textBaseline="top";
+  ctx.globalAlpha=Math.min(1,workingAmt);
+  ctx.fillStyle=`rgb(${AMBER[0]},${AMBER[1]},${AMBER[2]})`;
+  ctx.fillText(txt,W/2,H*.26);
+  ctx.globalAlpha=1;ctx.textAlign="left";
+}
+
 function drawStateTag(dt,state,alert){
   const label=alert?"ALERT":state.toUpperCase();
   if(label!==tagState){tagState=label;stateTag=new D(`${AV.name} // ${label}`,40);}
@@ -364,7 +386,9 @@ function frame(dt){
   const state=AV.state;
   const tgt=state==="thinking"?1:0;
   thinkingAmt+=(tgt-thinkingAmt)*Math.min(1,dt/400);
-  rain.update(dt,state,AV.alert,thinkingAmt,now);
+  const wtgt=state==="working"?1:0;
+  workingAmt+=(wtgt-workingAmt)*Math.min(1,dt/400);
+  rain.update(dt,state,AV.alert,thinkingAmt,workingAmt,now);
   const faceOn=face.update(dt,state==="speaking",AV.env,AV.alert,now);
   ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
   rainAlpha=Math.min(1,rainAlpha+dt/1500);
@@ -378,6 +402,7 @@ function frame(dt){
   }
   if(state==="listening")drawRibbon();else micHist.length=0;
   if(thinkingAmt>.25)drawThinking(dt);else thinkLabel=null;
+  if(workingAmt>.25)drawWorking(dt);else workLabel=null;
   drawStateTag(dt,state,AV.alert);
   if(AV.alert)drawAlertFrame();
 }

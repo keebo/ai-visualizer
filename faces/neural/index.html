@@ -56,6 +56,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
               (sensory, visual, brainstem) warms, drift eases
    thinking   everything floods bright, the drift speeds up, and
               a fast comet-tail sweep races the nine regions
+   working    a tool is actually running: NOT the whole-brain flood
+              of thinking — just motor + cerebellum (the "doing"
+              regions) pulse warm, the crescent takes an amber
+              cast, and the BUS panel chip goes live. Deliberately
+              bounded and mechanical, never the full comet sweep
    speaking   the output side (language, prefrontal, motor,
               association) rides the live voice envelope and the
               crescent breathes with it
@@ -103,7 +108,8 @@ const N_TENDRILS=46;
 // [traveling dots per second, base point brightness]. The spread here is
 // deliberately WIDE: the four states have to be legible from across a room,
 // not merely different in the math.
-const PROFILE={idle:[1.4,.38],listening:[2.6,.50],thinking:[13.0,.95],speaking:[9.0,.78]};
+const PROFILE={idle:[1.4,.38],listening:[2.6,.50],thinking:[13.0,.95],
+               working:[6.0,.70],speaking:[9.0,.78]};
 const BRIGHT_CAP=1.18;                 // color can never clip to white
 const PANEL_ROWS=CLUSTERS.slice(0,N_REGIONS).map((c,i)=>[c[0],i])
   .concat([["STT",null],["TTS",null],["MEMORY",null],["BUS",null]]);
@@ -223,7 +229,7 @@ function project(p,t,out){
 let listenAmt=0, now=0;
 // Eased state fades (the board's grammar): every state change crossfades
 // instead of cutting, and these drive colour, brightness, and drift speed.
-let listenS=0, thinkS=0, speakS=0;
+let listenS=0, thinkS=0, workS=0, speakS=0;
 // A warped clock. The parallax sway rides this instead of real time, so the
 // whole field visibly speeds up while thinking and eases down at idle.
 let warp=0;
@@ -251,9 +257,10 @@ function frame(dt){
   /* state fades + the warped clock */
   listenS+=((state==="listening"?1:0)-listenS)*(1-Math.exp(-dt/380));
   speakS +=((state==="speaking" ?1:0)-speakS )*(1-Math.exp(-dt/380));
+  workS  +=((state==="working"  ?1:0)-workS  )*(1-Math.exp(-dt/380));
   const thinkT=state==="thinking";
   thinkS +=((thinkT?1:0)-thinkS)*(1-Math.exp(-dt/(thinkT?300:160)));
-  warp+=dts*(0.55+1.30*thinkS+0.45*speakS+0.20*listenS);
+  warp+=dts*(0.55+1.30*thinkS+0.45*speakS+0.20*listenS+0.35*workS);
 
   /* heat + cascade + traveling dots */
   const heat=P.heat;
@@ -274,6 +281,14 @@ function frame(dt){
     heat[1]=Math.max(heat[1],.30+.45*env);   // MOTOR
     heat[3]=Math.max(heat[3],.35+.40*env);   // ASSOCIATION
   }
+  if(state==="working"){
+    // a tool is actually EXECUTING: just the "doing" regions warm, not
+    // the whole brain — deliberately smaller than thinking's flood so a
+    // tool call reads as bounded, mechanical work, not composing
+    const pulse=.5+.5*Math.sin(t*3.2);
+    heat[1]=Math.max(heat[1],.45+.35*pulse);   // MOTOR
+    heat[7]=Math.max(heat[7],.35+.30*pulse);   // CEREBELLUM
+  }
   if(thinkT){
     // a fast sweep with a trailing comet tail across the nine regions
     P.cascadeT+=dts;
@@ -286,7 +301,7 @@ function frame(dt){
   const rate=(PROFILE[state]||PROFILE.idle)[0]*(1+1.5*env);
   if(Math.random()<rate*dts)
     P.dots.push({ti:Math.random()*P.tendrils.length|0,t:0,s:.35+Math.random()*.35});
-  const dotSpeed=1+1.6*thinkS+0.6*speakS;   // thought-pulses race while thinking
+  const dotSpeed=1+1.6*thinkS+0.6*speakS+0.5*workS;   // thought-pulses race while thinking
   for(const d of P.dots)d.t+=dts*d.s*dotSpeed;
   P.dots=P.dots.filter(d=>d.t<1).slice(0,60);
 
@@ -340,14 +355,17 @@ function frame(dt){
   // The crescent is the single brightest element, so it carries the state
   // loudest: dim at idle, cool while listening, hot while thinking, and
   // riding the live envelope while speaking.
-  const arcCol=alert?[255,90,80]
-    :[215+(150-215)*listenS,240+(215-240)*listenS,255];
+  let arcR=215+(150-215)*listenS, arcG=240+(215-240)*listenS, arcB=255;
+  // working takes an amber cast on top — the same "a tool is grinding"
+  // language the other faces use, layered after the cool listening blend
+  arcR+=(255-arcR)*(.7*workS);arcG+=(176-arcG)*(.7*workS);arcB+=(64-arcB)*(.7*workS);
+  const arcCol=alert?[255,90,80]:[arcR,arcG,arcB];
   for(let i=0;i<P.arc.length;i++){
     const p=P.arc[i];
     live[0]=p[0]*breath;live[1]=p[1]*breath;live[2]=p[2]*breath;
     project(live,warp,_pr);
     const atw=.75+.25*Math.sin(t*.9+P.arcTw[i]);
-    const ab=Math.min(1.6,P.arcW[i]*atw*(.50+.90*env+.55*thinkS+.20*listenS)*1.6);
+    const ab=Math.min(1.6,P.arcW[i]*atw*(.50+.90*env+.55*thinkS+.20*listenS+.35*workS)*1.6);
     const r=arcCol[0]*ab,g=arcCol[1]*ab,b=arcCol[2]*ab;
     const xi=_pr[0]|0,yi=_pr[1]|0;
     splat(xi,yi,r,g,b,1);
@@ -454,6 +472,8 @@ function chipFor(name,ri,state,alert){
   if(name==="STT")return state==="listening"?["LIVE",GREEN]:["RDY",dim2(INK,.8)];
   if(name==="TTS")return state==="speaking"?["LIVE",GREEN]:["RDY",dim2(INK,.8)];
   if(name==="MEMORY")return(state==="thinking"||flick)?["READ",CYAN]:["OK",dim2(INK,.8)];
+  if(name==="BUS")return state==="working"?["RUN",AMBER]
+    :["OK",(now/1000|0)%4?GREEN:dim2(GREEN,.7)];
   return["OK",(now/1000|0)%4?GREEN:dim2(GREEN,.7)];
 }
 function dim2(c,f){return[c[0]*f|0,c[1]*f|0,c[2]*f|0]}

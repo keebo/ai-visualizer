@@ -111,11 +111,14 @@ SPDX-License-Identifier: AGPL-3.0-or-later
    them and chain onward. Green primary, amber secondary.
    Idle = calm current · listening = the flow REVERSES (cool
    signals converge inward on the chip) · thinking = the whole
-   board amps up, riding one eased energy curve (no jump cuts).
+   board amps up, riding one eased energy curve (no jump cuts) ·
+   working = a tool is actually running: same amped pacing as
+   thinking, but pulses go solid hot-amber instead of the usual
+   green/amber mix, and the HUD reads WORKING instead of THINKING.
    Driven by the voice bus through core.js (AV.state / AV.level).
    Space = the LIVE CINEMATIC flythrough (again = bail out); C = same.
    F = fullscreen; the fps meter is ?fps=1. ?demo=1 self-runs.
-   ?shot=idle|thinking|speaking[&cine=1]
+   ?shot=idle|thinking|working|speaking[&cine=1]
    &t=ms -> deterministic still for verification.
    ============================================================ */
 
@@ -140,6 +143,10 @@ const GREEN="#3ddc84", GREEN_HOT="#a6ffd0", AMBER="#e7c368", AMBER_HOT="#ffe9ae"
 const SPEAK_COLS=["#35e0ff","#9d7bff","#ff4d9d","#5fa8ff","#46e28a","#e7c368"];
 /* listening = cool input colors flowing INTO the chip */
 const LISTEN_COLS=["#35e0ff","#5fa8ff"], LISTEN_COOL="#35e0ff";
+/* working = a tool is actually running: pulses go solid hot-amber
+   regardless of a trace's own color, instead of the usual green/amber
+   mix — deliberately NOT the same look as thinking's storm */
+const WORK_COLS=["#ffb454","#ff9f45","#ffd27a","#e7c368"];
 /* thinking = the label scrambles through this set (monospace-safe glyphs) */
 const SCRAM="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%&@<>/*+=?";
 function hex2rgb(h){const n=parseInt(h.slice(1),16);return[n>>16,(n>>8)&255,n&255]}
@@ -154,11 +161,13 @@ let lvlS=0, rings=[], lastRing=0;   // smoothed voice level + chip sound-wave ri
 let talkS=0, speakingNowG=false;    // eased talk fade + spawn-time speaking flag
 let listenS=0;                      // eased listening fade (cool cast + inward flow)
 let thinkS=0;                       // eased thinking fade (label matrix-scramble)
+let workingNowG=false;              // spawn-time flag: a tool is running, pulses go amber
 let echoT=-1;                       // demo flavor: typed command while thinking
 
 function targetEnergy(){
   const s=AV.state, lvl=AV.level;
   if(s==="thinking")return 1;
+  if(s==="working")return .85;
   if(s==="speaking")return Math.min(.97,.5+.5*Math.pow(lvl,.7));
   if(s==="listening")return .5;
   return .25;
@@ -174,6 +183,9 @@ function syncHUD(){
   const s=AV.state;
   if(s==="thinking"){
     mode.innerHTML='THINKING<span class="spin"></span>';
+    hint.querySelector(".proc").style.display="inline";hint.querySelector(".idlehint").style.display="none";
+  }else if(s==="working"){
+    mode.innerHTML='WORKING<span class="spin"></span>';
     hint.querySelector(".proc").style.display="inline";hint.querySelector(".idlehint").style.display="none";
   }else{
     mode.textContent=s==="speaking"?"SPEAKING":s==="listening"?"LISTENING":"IDLE";
@@ -571,8 +583,10 @@ function revGeo(t){
 }
 function spawnPulse(ti,inward){
   const t=traces[ti];
-  // talking = the voice palette; listening = cool colors flowing INTO the chip
+  // talking = the voice palette; listening = cool colors flowing INTO the
+  // chip; working = solid amber (a tool is actually running)
   const col=speakingNowG?SPEAK_COLS[(rnd()*SPEAK_COLS.length)|0]
+           :workingNowG?WORK_COLS[(rnd()*WORK_COLS.length)|0]
            :inward?LISTEN_COLS[(rnd()*LISTEN_COLS.length)|0]:null;
   pulses.push({t,geo:inward?revGeo(t):null,inward:!!inward,d:0,sp:R(.14,.26)*Math.min(W,H)/1000,col});
 }
@@ -714,6 +728,7 @@ function frame(dt){
   const busS=AV.state;
   const speakingNow=busS==="speaking";
   speakingNowG=speakingNow;
+  workingNowG=busS==="working";
   lvlS+=(AV.level-lvlS)*(1-Math.exp(-dt/90));
   talkS+=((speakingNow?1:0)-talkS)*(1-Math.exp(-dt/380));
   const listeningNow=busS==="listening";
