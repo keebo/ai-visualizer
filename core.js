@@ -69,6 +69,7 @@ const AV = (() => {
     name: "JARVIS", label: "J.A.R.V.I.S.", badge: "",
     demo: DEMO, shot: SHOT, faces: [],
     _sndOn: true, _mic: false, _readyCbs: [], _ready: false,
+    _lastSpeakingT: -1e9,
   };
 
   function dotted(name) {
@@ -152,6 +153,7 @@ const AV = (() => {
     // wants to draw it reads AV.rateLimits; every other face ignores it.
     A.rateLimits = raw.rate_limits || {};
     A.level = raw.level || 0;
+    if (A.state === "speaking") A._lastSpeakingT = performance.now();
 
     // adaptive envelope: normalize against a decaying peak, then ease
     // (attack 50ms, release 350ms) — motion code rides AV.env
@@ -259,8 +261,17 @@ const AV = (() => {
   }
   function soundUpdate() {
     if (!audio || !A._sndWant) return;
+    // The backend re-asserts "speaking" every ~70-90ms while mouth.py is
+    // actually writing audio to the device (its own self-heal). We only
+    // poll /state every 120ms, so a "working"/"thinking" write that lands
+    // mid-sentence (a tool call starting while a prior line is still
+    // physically playing) can be caught before the self-heal overwrites
+    // it. Hold off starting the sound until it's been a beat since we
+    // last actually saw "speaking" — long enough to absorb that race and
+    // a missed poll, short enough to never delay a real thinking/working.
+    const graceOk = performance.now() - A._lastSpeakingT > 300;
     const want = A._sndOn && (A.state === "thinking" || A.state === "working")
-      && !raw.loading;
+      && !raw.loading && graceOk;
     if (want && !playing) {
       playing = true;
       audio.currentTime = 0;
