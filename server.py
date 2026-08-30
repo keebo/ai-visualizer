@@ -74,6 +74,7 @@ Ctrl-C stops.
 import json
 import math
 import mimetypes
+import subprocess
 import sys
 import threading
 import time
@@ -319,8 +320,15 @@ if __name__ == "__main__":
         sys.exit(1)
     srv.allow_reuse_address = True
     print(f"ai-visualizer on {root}  opening {url}  ({mode})  Ctrl-C stops", flush=True)
+
+    def open_in_chrome():
+        try:
+            subprocess.run(["open", "-a", "Google Chrome", url], check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            webbrowser.open(url)
+
     if not NO_OPEN:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, open_in_chrome).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
