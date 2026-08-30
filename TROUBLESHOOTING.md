@@ -46,4 +46,4 @@ The face only surfaces while the agent is speaking, and it needs `assets/face.pn
 
 ## Updating
 
-Run `./update.sh` (`update.bat` on Windows) in this folder, or double-click the `Update` icon if setup left one. It shows what changed before applying it and can never touch your `ai-visualizer.json`. If an older updater said "couldn't fast-forward" or mentioned local changes, run `./update.sh` once and it clears: it moves your config out of git's sight and everything flows after.
+Run `./update.sh` in this folder (macOS), or double-click the `Update` icon if setup left one. On Windows, ask your agent: "pull the latest ai-visualizer and tell me what changed." The updater shows what changed before applying it and can never touch your `ai-visualizer.json`. If an older updater said "couldn't fast-forward" or mentioned local changes, run `./update.sh` once and it clears: it moves your config out of git's sight and everything flows after.

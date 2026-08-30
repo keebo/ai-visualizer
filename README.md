@@ -82,7 +82,7 @@ The VT323 typeface by Peter Hull, licensed under the SIL Open Font License 1.1 (
 
 ## Updating
 
-The visualizer improves continuously, and new faces are planned. To update, double-click the `Update` icon setup left on your Desktop, or run `./update.sh` (`update.bat` on Windows) in this folder: either shows you what changed before applying it. Saying **"pull the latest ai-visualizer and tell me what changed"** to your agent works too. Your config and any custom faces you added stay untouched. Installed through fullstack-agent? `./fullstack-agent/update.sh` updates every piece at once and prints what changed.
+The visualizer improves continuously, and new faces are planned. To update on macOS, double-click the `Update` icon setup left on your Desktop, or run `./update.sh` in this folder. On Windows, or any time, say **"pull the latest ai-visualizer and tell me what changed"** to your agent — it does the same job. Your config and any custom faces you added stay untouched. Installed through fullstack-agent? `./fullstack-agent/update.sh` (macOS) updates every piece at once and prints what changed.
 
 ## The rest of it
 
