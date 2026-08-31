@@ -96,6 +96,10 @@ DEFAULTS = {
     "port": 8790,
     "bus_dir": "",          # where the .voice_* files live ("" = here)
     "thinking_sound": True, # play assets/thinking.wav while thinking
+    # Label a face shows when a local model (backtalk's local_llm) is
+    # answering instead of the main agent — only meaningful if that
+    # feature is on. "" falls back to a generic "LOCAL" in the face.
+    "local_name": "",
 }
 
 
@@ -124,6 +128,7 @@ if "--mock" in sys.argv:
     MOCK = sys.argv[i + 1] if len(sys.argv) > i + 1 else "speaking"
     if MOCK not in STATES:
         MOCK = "speaking"
+MOCK_SOURCE = "local" if "--mock-local" in sys.argv else ""
 PORT = int(CFG.get("port", 8790))
 if "--port" in sys.argv:
     i = sys.argv.index("--port")
@@ -165,7 +170,8 @@ def mock_bus():
             "rate_limits": {
                 "five_hour": {"utilization": 0.34, "resets_at": t + 9200},
                 "seven_day": {"utilization": 0.61, "resets_at": t + 288000},
-            }}
+            },
+            "source": MOCK_SOURCE}
 
 
 def _background_job_active():
@@ -216,8 +222,16 @@ def read_bus():
         rate_limits = json.loads((BUS / ".voice_rate_limits").read_text())
     except (OSError, ValueError):
         pass
+    # Absent unless local_llm.enabled — which model answered the turn
+    # in flight, "local" or "cloud". See backtalk's signals.set_source.
+    source = ""
+    try:
+        source = (BUS / ".voice_source").read_text().strip().lower()
+    except OSError:
+        pass
     return {"state": state, "level": level, "samples": samples,
-            "alert": alert, "loading": loading, "rate_limits": rate_limits}
+            "alert": alert, "loading": loading, "rate_limits": rate_limits,
+            "source": source}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -231,6 +245,7 @@ class Handler(BaseHTTPRequestHandler):
                 out = {"name": CFG["name"], "badge": CFG["badge"],
                        "face": CFG["face"],
                        "thinking_sound": bool(CFG["thinking_sound"]),
+                       "local_name": CFG.get("local_name", ""),
                        "faces": list_faces()}
                 self._send(json.dumps(out).encode(), "application/json")
             else:

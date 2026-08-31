@@ -26,7 +26,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
   :root{
     --ink:#e8f0f2; --dim:#5a6a72; --dimmer:#39464e;
     --gold:#e7c368; --gold-dim:#9a8347;
-    --green:#3ddc84; --red:#ff4d5e;
+    --green:#3ddc84; --red:#ff4d5e; --local:#4fc3ff;
     --chrome:#1c2f26;
     --mono:"SF Mono",Menlo,Consolas,monospace;
   }
@@ -62,6 +62,15 @@ SPDX-License-Identifier: AGPL-3.0-or-later
        box-shadow:0 0 24px rgba(61,220,132,.5),inset 0 0 14px rgba(0,0,0,.55);position:relative}
   #orb::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:1px solid rgba(61,220,132,.35)}
 
+  /* PLAN USAGE — hidden by default (empty), only appears once the voice
+     line has been told to publish rate-limit readings (show_usage).
+     Mirrors the neural face's row treatment: a % + reset countdown per
+     window, amber under 80%, red at/above it. */
+  #usage{margin-top:10px;font-size:clamp(11px,.8vw,16px);letter-spacing:.28em;color:var(--dim);text-align:right}
+  #usage .row{display:flex;justify-content:flex-end;gap:.6em;margin-top:3px}
+  #usage .row:first-child{margin-top:0}
+  #usage .lbl{color:var(--dim)}
+
   @keyframes blink{50%{opacity:.15}}
 
   /* bottom bar */
@@ -94,6 +103,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     <div id="statemode">IDLE</div>
     <div id="clock">00:00:00</div>
     <div id="orb"></div>
+    <div id="usage"></div>
   </div>
 
   <div id="echo"></div>
@@ -156,7 +166,7 @@ function rgba(h,a){const[r,g,b]=hex2rgb(h);return`rgba(${r},${g},${b},${a})`}
 let now=0;
 const COMMAND="> run system diagnostics";
 let Ecur=.25;
-let busPrev="idle";
+let busPrev="idle", sourcePrev="";
 let lvlS=0, rings=[], lastRing=0;   // smoothed voice level + chip sound-wave rings
 let talkS=0, speakingNowG=false;    // eased talk fade + spawn-time speaking flag
 let listenS=0;                      // eased listening fade (cool cast + inward flow)
@@ -178,19 +188,51 @@ function easeTaus(){
   return[520,950];
 }
 
+function relTime(ep){
+  const d=ep-Date.now()/1000;
+  if(!(d>0))return"";
+  if(d<3600)return Math.round(d/60)+"m";
+  if(d<86400){
+    const h=Math.floor(d/3600), m=Math.round((d-h*3600)/60);
+    return m<60?`${h}h ${m}m`:`${h+1}h 0m`;
+  }
+  return Math.round(d/86400)+"d";
+}
+let usageShown=null;
+function syncUsage(){
+  const rl=AV.rateLimits||{};
+  const rows=[["5H",rl.five_hour],["7D",rl.seven_day]].filter(([,w])=>w);
+  if(!rows.length){
+    if(usageShown!==false){usageShown=false;$("usage").innerHTML="";}
+    return;
+  }
+  usageShown=true;
+  $("usage").innerHTML=rows.map(([label,w])=>{
+    const known=w.utilization!=null;
+    const pct=known?Math.round(w.utilization*100):null;
+    const col=known&&pct>=80?"var(--red)":"#e7c368";
+    const rel=w.resets_at?relTime(w.resets_at):"";
+    const txt=(known?pct+"%":"—")+(rel?"  "+rel:"");
+    return `<div class="row"><span class="lbl">${label}</span><span style="color:${col}">${txt}</span></div>`;
+  }).join("");
+}
+
 function syncHUD(){
   const mode=$("statemode"),hint=$("hint");
   const s=AV.state;
+  const local=AV.source==="local";
+  const tag=local?" · "+(AV.localName||"LOCAL"):"";
   if(s==="thinking"){
-    mode.innerHTML='THINKING<span class="spin"></span>';
+    mode.innerHTML='THINKING<span class="spin"></span>'+tag;
     hint.querySelector(".proc").style.display="inline";hint.querySelector(".idlehint").style.display="none";
   }else if(s==="working"){
-    mode.innerHTML='WORKING<span class="spin"></span>';
+    mode.innerHTML='WORKING<span class="spin"></span>'+tag;
     hint.querySelector(".proc").style.display="inline";hint.querySelector(".idlehint").style.display="none";
   }else{
-    mode.textContent=s==="speaking"?"SPEAKING":s==="listening"?"LISTENING":"IDLE";
+    mode.innerHTML=(s==="speaking"?"SPEAKING":s==="listening"?"LISTENING":"IDLE")+tag;
     hint.querySelector(".proc").style.display="none";hint.querySelector(".idlehint").style.display="inline";
   }
+  mode.style.color=local?"var(--local)":"";
 }
 
 /* ---------------- board data ---------------- */
@@ -707,9 +749,11 @@ function updateCine(dt){
 function frame(dt){
   AV.tick(dt);
   now+=dt;
-  if(AV.state!==busPrev){busPrev=AV.state;syncHUD();
-    if(AV.demo&&AV.state==="thinking")echoT=0;
-    if(AV.demo&&AV.state==="idle"){echoT=-1;$("echo").innerHTML=""}}
+  if(AV.state!==busPrev||AV.source!==sourcePrev){
+    const stateChanged=AV.state!==busPrev;
+    busPrev=AV.state;sourcePrev=AV.source;syncHUD();
+    if(stateChanged&&AV.demo&&AV.state==="thinking")echoT=0;
+    if(stateChanged&&AV.demo&&AV.state==="idle"){echoT=-1;$("echo").innerHTML=""}}
   const Et=targetEnergy();
   const [tu,td]=easeTaus();
   Ecur+=(Et-Ecur)*(1-Math.exp(-dt/(Et>Ecur?tu:td)));
@@ -722,6 +766,7 @@ function frame(dt){
     $("echo").innerHTML=COMMAND.slice(0,shown).replace(/</g,"&lt;")+'<span class="cur"></span>';
   }
   $("clock").textContent=fmtClock(new Date());
+  syncUsage();
 
   /* motion energy, state-aware: idle = a near-sleeping crawl,
      talking = calm cruise, thinking = the full-speed storm */

@@ -34,6 +34,11 @@
      AV.name       display name from config ("JARVIS" by default)
      AV.label      the dotted chip label ("J.A.R.V.I.S.")
      AV.badge      optional handle from config ("" by default)
+     AV.source     "" | "local" | "cloud" — which model answered the
+                   turn in flight, only set when backtalk's
+                   local_llm.enabled is on
+     AV.localName  the local model's own name from config
+                   (ai-visualizer.json's local_name), "" if unset
 
    Modes:
      live   served by server.py — rides the real signal bus
@@ -82,6 +87,9 @@ const AV = (() => {
   function applyConfig(cfg) {
     if (cfg.name) { A.name = String(cfg.name); A.label = dotted(A.name); }
     A.badge = String(cfg.badge || "");
+    // Shown in place of a generic "LOCAL" tag when AV.source === "local"
+    // — "" falls back to that generic tag, a face isn't required to use it.
+    A.localName = String(cfg.local_name || "");
     if (cfg.thinking_sound === false) A._sndWant = false;
     A.faces = cfg.faces || [];
     A._ready = true;
@@ -152,6 +160,10 @@ const AV = (() => {
     // Empty unless the voice line was told to publish usage. A face that
     // wants to draw it reads AV.rateLimits; every other face ignores it.
     A.rateLimits = raw.rate_limits || {};
+    // "" unless local_llm.enabled — "local" or "cloud", which model
+    // answered the turn in flight. A face that wants to flag a
+    // local-model answer reads AV.source; every other face ignores it.
+    A.source = raw.source || "";
     A.level = raw.level || 0;
     if (A.state === "speaking") A._lastSpeakingT = performance.now();
 
