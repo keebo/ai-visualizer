@@ -55,7 +55,20 @@ script:
 While ANY file sits in that folder, /state reports "working" instead
 of "idle" (a live turn's own state always takes priority). A marker
 older than 6 hours is ignored, so a job that crashed without cleaning
-up can't wedge the face in "working" forever.
+up can't wedge the face in "working" for that long.
+
+Optional, Python-only upgrade: write your PID as the marker's content
+instead of leaving it empty --
+
+  BG_MARKER.write_text(str(os.getpid()))
+
+-- and a marker whose owning process has already died gets ignored
+immediately instead of waiting up to 6 hours (confirmed real 2026-09-02:
+a launchd photo-tagging job got killed by a reboot before its own
+`finally` cleanup ran, wedging the face on "working" for the rest of
+that stretch). A marker with no PID, or one that can't be read as an
+int, just falls back to the age-only check above -- so the plain
+`touch`/`rm` shell-script path stays exactly as simple as it always was.
 
 Where the bus lives comes from "bus_dir" in ai-visualizer.json (default:
 this folder). Point it at your backtalk folder, or point backtalk's
@@ -74,6 +87,7 @@ Ctrl-C stops.
 import json
 import math
 import mimetypes
+import os
 import subprocess
 import sys
 import threading
@@ -174,12 +188,41 @@ def mock_bus():
             "source": MOCK_SOURCE}
 
 
+def _marker_pid(path: Path) -> int | None:
+    """The marker's content as a PID, if it has one -- see the module
+    docstring's optional PID-marker upgrade. None for an empty/plain
+    touch()'d marker or one that doesn't parse, which is the expected,
+    still-supported common case."""
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just owned by someone else
+    return True
+
+
 def _background_job_active():
-    """Any live (non-stale) file in BG_DIR counts as work in progress."""
+    """Any live, non-stale, non-orphaned file in BG_DIR counts as work
+    in progress. A PID-marker whose process has already died is treated
+    as inactive immediately rather than waiting out BG_STALE_S."""
     try:
         now = time.time()
-        return any(now - p.stat().st_mtime < BG_STALE_S
-                   for p in BG_DIR.iterdir())
+        for p in BG_DIR.iterdir():
+            if now - p.stat().st_mtime >= BG_STALE_S:
+                continue
+            pid = _marker_pid(p)
+            if pid is not None and not _pid_alive(pid):
+                continue
+            return True
+        return False
     except OSError:
         return False
 
