@@ -340,6 +340,27 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def open_visualizer(url):
+    """Open the visualizer. If ai-visualizer.json sets "open_app" (a full
+    path to a standalone .app -- e.g. a Safari "Add to Dock" web app
+    pinned to this same URL), launch that instead of a browser tab, since
+    a dedicated app has a far smaller memory footprint than a Chrome tab
+    (confirmed 2026-09-05: ~300MB isolated vs 800MB+ for one Chrome tab).
+    Falls back to opening Chrome directly, then the OS default browser,
+    if no "open_app" is configured or launching it fails."""
+    mac_app = CFG.get("open_app")
+    if mac_app:
+        try:
+            subprocess.run(["open", "-a", mac_app], check=True)
+            return
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    try:
+        subprocess.run(["open", "-a", "Google Chrome", url], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        webbrowser.open(url)
+
+
 if __name__ == "__main__":
     mode = f"MOCK={MOCK}" if MOCK else f"bus: {BUS}"
     root = f"http://127.0.0.1:{PORT}/"
@@ -369,7 +390,7 @@ if __name__ == "__main__":
         if mine:
             print(f"already running at {root}  opening it instead", flush=True)
             if not NO_OPEN:
-                webbrowser.open(url)
+                open_visualizer(url)
             sys.exit(0)
         print(f"port {PORT} is taken by something that is not this server.",
               flush=True)
@@ -379,14 +400,8 @@ if __name__ == "__main__":
     srv.allow_reuse_address = True
     print(f"ai-visualizer on {root}  opening {url}  ({mode})  Ctrl-C stops", flush=True)
 
-    def open_in_chrome():
-        try:
-            subprocess.run(["open", "-a", "Google Chrome", url], check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            webbrowser.open(url)
-
     if not NO_OPEN:
-        threading.Timer(0.6, open_in_chrome).start()
+        threading.Timer(0.6, open_visualizer, args=(url,)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
