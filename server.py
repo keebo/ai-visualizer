@@ -435,15 +435,18 @@ class Handler(BaseHTTPRequestHandler):
 def open_visualizer(url):
     """Open the visualizer. If ai-visualizer.json sets "open_app" (a full
     path to a standalone .app -- e.g. a Safari "Add to Dock" web app
-    pinned to this same URL), launch that instead of a browser tab, since
-    a dedicated app has a far smaller memory footprint than a Chrome tab
-    (confirmed 2026-09-05: ~300MB isolated vs 800MB+ for one Chrome tab).
-    Falls back to opening Chrome directly, then the OS default browser,
-    if no "open_app" is configured or launching it fails."""
+    pinned to this same URL -- or a list of them, when more than one face
+    has its own pinned app), launch the first one instead of a browser
+    tab, since a dedicated app has a far smaller memory footprint than a
+    Chrome tab (confirmed 2026-09-05: ~300MB isolated vs 800MB+ for one
+    Chrome tab). Falls back to opening Chrome directly, then the OS
+    default browser, if no "open_app" is configured or launching it
+    fails."""
     mac_app = CFG.get("open_app")
     if mac_app:
+        first = mac_app[0] if isinstance(mac_app, list) else mac_app
         try:
-            subprocess.run(["open", "-a", mac_app], check=True)
+            subprocess.run(["open", "-a", first], check=True)
             return
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
