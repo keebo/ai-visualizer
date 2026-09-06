@@ -210,7 +210,7 @@ function syncUsage(){
   $("usage").innerHTML=rows.map(([label,w])=>{
     const known=w.utilization!=null;
     const pct=known?Math.round(w.utilization*100):null;
-    const col=known&&pct>=80?"var(--red)":"#e7c368";
+    const col=!known?"#e7c368":pct>=81?"var(--red)":pct>=51?"#e7c368":"var(--green)";
     const rel=w.resets_at?relTime(w.resets_at):"";
     const txt=(known?pct+"%":"—")+(rel?"  "+rel:"");
     return `<div class="row"><span class="lbl">${label}</span><span style="color:${col}">${txt}</span></div>`;
