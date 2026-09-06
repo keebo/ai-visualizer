@@ -37,18 +37,32 @@ SPDX-License-Identifier: AGPL-3.0-or-later
   #volCtl{position:fixed;right:18px;top:18px;z-index:45;opacity:0;
     transition:opacity .4s;pointer-events:none;
     font:11px 'SF Mono',Menlo,Consolas,monospace;letter-spacing:.15em;
-    color:#5a6a72;text-align:right}
+    color:#bfe9f5;text-align:right}
   #volCtl .row{display:flex;align-items:center;justify-content:flex-end;
-    gap:8px;margin-bottom:4px}
-  #volCtl input[type=range]{width:90px;accent-color:#5ae1ff;cursor:pointer}
+    gap:6px;margin-bottom:4px}
+  #volCtl input[type=range]{width:80px;accent-color:#5ae1ff;cursor:pointer}
+  #volCtl .stepbtn{width:16px;height:16px;line-height:14px;padding:0;
+    background:rgba(90,225,255,.12);border:1px solid rgba(90,225,255,.4);
+    border-radius:3px;color:#bfe9f5;font:11px/1 'SF Mono',Menlo,Consolas,monospace;
+    cursor:pointer;text-align:center}
+  #volCtl .stepbtn:hover{background:rgba(90,225,255,.28)}
+  #volCtl .val{display:inline-block;width:34px;text-align:right;color:#5ae1ff}
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
 <pre id="noteText"></pre>
 <div id="volCtl">
-  <div class="row"><span>THINK</span><input type="range" id="volThink" min="0" max="1" step="0.01"></div>
-  <div class="row"><span>VOICE</span><input type="range" id="volVoice" min="0" max="1" step="0.01"></div>
+  <div class="row"><span>THINK</span>
+    <button class="stepbtn" data-target="volThink" data-dir="-1">−</button>
+    <input type="range" id="volThink" min="0" max="1" step="0.01">
+    <button class="stepbtn" data-target="volThink" data-dir="1">+</button>
+    <span class="val" id="volThinkVal">--</span></div>
+  <div class="row"><span>VOICE</span>
+    <button class="stepbtn" data-target="volVoice" data-dir="-1">−</button>
+    <input type="range" id="volVoice" min="0" max="1" step="0.01">
+    <button class="stepbtn" data-target="volVoice" data-dir="1">+</button>
+    <span class="val" id="volVoiceVal">--</span></div>
 </div>
 <script src="../../core.js"></script>
 <script>
@@ -81,12 +95,38 @@ AV.ready(a=>{document.title=a.name+" Arc Reactor";});
 const volBox=document.getElementById("volCtl");
 const volThink=document.getElementById("volThink");
 const volVoice=document.getElementById("volVoice");
+const volThinkVal=document.getElementById("volThinkVal");
+const volVoiceVal=document.getElementById("volVoiceVal");
+const VOL_STEP=0.05;   // per arrow click -- finer, reliable control beyond
+                       // what a mouse drag on the slider itself can land on
+function pct(v){return Math.round(v*100)+"%";}
+function syncVolLabel(kind){
+  if(kind==="thinking")volThinkVal.textContent=pct(parseFloat(volThink.value));
+  else volVoiceVal.textContent=pct(parseFloat(volVoice.value));
+}
+function setVol(kind,value){
+  value=Math.min(1,Math.max(0,value));
+  const el=kind==="thinking"?volThink:volVoice;
+  el.value=value;
+  syncVolLabel(kind);
+  AV.setVolume(kind,value);
+}
 // Seeded once from whatever the bus already has (another session's
 // slider, or the config default) so the handle doesn't jump the
 // instant the user first touches it.
-AV.ready(()=>{volThink.value=AV.thinkingVolume;volVoice.value=AV.voiceVolume;});
-volThink.addEventListener("input",()=>AV.setVolume("thinking",parseFloat(volThink.value)));
-volVoice.addEventListener("input",()=>AV.setVolume("voice",parseFloat(volVoice.value)));
+AV.ready(()=>{
+  volThink.value=AV.thinkingVolume;volVoice.value=AV.voiceVolume;
+  syncVolLabel("thinking");syncVolLabel("voice");
+});
+volThink.addEventListener("input",()=>{AV.setVolume("thinking",parseFloat(volThink.value));syncVolLabel("thinking");});
+volVoice.addEventListener("input",()=>{AV.setVolume("voice",parseFloat(volVoice.value));syncVolLabel("voice");});
+for(const btn of document.querySelectorAll("#volCtl .stepbtn")){
+  btn.addEventListener("click",()=>{
+    const kind=btn.dataset.target==="volThink"?"thinking":"voice";
+    const el=btn.dataset.target==="volThink"?volThink:volVoice;
+    setVol(kind,parseFloat(el.value)+VOL_STEP*parseFloat(btn.dataset.dir));
+  });
+}
 let volHideT=null;
 function volHide(){volBox.style.opacity="0";volBox.style.pointerEvents="none";}
 addEventListener("mousemove",()=>{
