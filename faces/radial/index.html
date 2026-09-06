@@ -682,7 +682,30 @@ function frame(dt){
     ctx.textAlign="left";ctx.textBaseline="alphabetic";
   }
 
+  drawUsage();
+
   if(AV.alert)drawAlert(cxp,cyp,innerR,dt60);
+}
+
+/* Plan usage, bottom-left. Drawn from AV.util.usageRows so this face cannot
+   disagree with the others about the same number, and silent when the voice
+   line publishes no usage. */
+function drawUsage(){
+  const rows=AV.util.usageRows();
+  if(!rows.length)return;
+  const fs=Math.max(9,Math.round(Math.min(W,H)*.014));
+  ctx.save();
+  ctx.font=`${fs}px 'SF Mono',Menlo,Consolas,monospace`;
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  let y=H-16-(rows.length-1)*(fs+6);
+  for(const r of rows){
+    ctx.fillStyle="rgb(78,120,96)";
+    ctx.fillText(r.label,18,y);
+    ctx.fillStyle=r.hot?"rgb(255,110,90)":"rgb(110,220,150)";
+    ctx.fillText(r.text,18+fs*2.4,y);
+    y+=fs+6;
+  }
+  ctx.restore();
 }
 
 function resize(){

@@ -372,6 +372,24 @@ function drawStateTag(dt,state,alert){
   ctx.fillText(stateTag.render(dt),18,H-16);
 }
 
+/* Plan usage, bottom-RIGHT so it sits opposite the state tag rather than
+   fighting it for the same corner. Shared formatting via AV.util.usageRows. */
+function drawUsage(){
+  const rows=AV.util.usageRows();
+  if(!rows.length)return;
+  const fs=Math.round(Math.min(W,H)*.024);
+  ctx.save();
+  ctx.font=`${fs}px ${UI_FONT}`;
+  ctx.textAlign="right";ctx.textBaseline="alphabetic";
+  let y=H-16-(rows.length-1)*(fs+4);
+  for(const r of rows){
+    ctx.fillStyle=r.hot?`rgb(${RED[0]},${RED[1]},${RED[2]})`:"rgb(0,150,50)";
+    ctx.fillText(`${r.label} ${r.text}`,W-18,y);
+    y+=fs+4;
+  }
+  ctx.restore();
+}
+
 function drawAlertFrame(){
   const pulse=.45+.55*Math.abs(Math.sin(now/250));
   ctx.fillStyle=`rgba(${RED[0]},${RED[1]},${RED[2]},${.6*pulse})`;
@@ -404,6 +422,7 @@ function frame(dt){
   if(thinkingAmt>.25)drawThinking(dt);else thinkLabel=null;
   if(workingAmt>.25)drawWorking(dt);else workLabel=null;
   drawStateTag(dt,state,AV.alert);
+  drawUsage();
   if(AV.alert)drawAlertFrame();
 }
 

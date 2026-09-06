@@ -336,6 +336,42 @@ const AV = (() => {
     return `rgb(${c[0] * f | 0},${c[1] * f | 0},${c[2] * f | 0})`;
   };
   U.rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+  // How long until a usage window resets, in the shortest honest unit.
+  U.relTime = (ep) => {
+    const d = ep - Date.now() / 1000;
+    if (!(d > 0)) return "";
+    if (d < 3600) return Math.round(d / 60) + "m";
+    if (d < 86400) return Math.round(d / 3600) + "h";
+    return Math.round(d / 86400) + "d";
+  };
+
+  // The plan-usage windows, formatted ONCE for every face that draws them.
+  // Lives here rather than in each face because four copies of one format
+  // drift apart silently, and the first symptom is two faces disagreeing
+  // about the same number.
+  //
+  // Returns [] when the voice line publishes no usage, so a face can call
+  // it unconditionally and simply draw nothing when there is nothing to say.
+  // A window that is KNOWN but has no percentage yet still returns a row:
+  // hiding it entirely was the original bug, and a row that says "no number
+  // yet" is information where a missing row is just confusing.
+  U.usageRows = () => {
+    const rl = A.rateLimits || {};
+    const out = [];
+    for (const [label, w] of [["5H", rl.five_hour], ["7D", rl.seven_day]]) {
+      if (!w) continue;
+      const known = w.utilization != null;
+      const pct = known ? Math.round(w.utilization * 100) : null;
+      const rel = w.resets_at ? U.relTime(w.resets_at) : "";
+      out.push({
+        label, pct, known,
+        hot: known && pct >= 80,
+        text: (known ? pct + "%" : "\u2014") + (rel ? "  " + rel : "")
+      });
+    }
+    return out;
+  };
   U.mix = (c1, c2, t) => [c1[0] + (c2[0] - c1[0]) * t | 0,
                           c1[1] + (c2[1] - c1[1]) * t | 0,
                           c1[2] + (c2[2] - c1[2]) * t | 0];
