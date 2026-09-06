@@ -49,6 +49,10 @@
      AV.activity   [{ts,tool,detail}, ...], oldest first, kept by a
                    PreToolUse hook (.agent_activity) — a live "what is
                    Jarvis doing" feed a face can render as a terminal
+     AV.thinkingVolume  0..1, backtalk's own afplay thinking-cue volume
+     AV.voiceVolume     0..1, backtalk's own TTS output gain
+     AV.setVolume(kind, value)  kind: "thinking"|"voice" — POSTs a new
+                   value to /volume for a face's own slider UI to call
 
    Modes:
      live   served by server.py — rides the real signal bus
@@ -92,6 +96,7 @@ const AV = (() => {
     demo: DEMO, shot: SHOT, faces: [],
     _sndOn: true, _mic: false, _readyCbs: [], _ready: false,
     _lastSpeakingT: -1e9,
+    thinkingVolume: 0.35, voiceVolume: 1.0,
   };
 
   function dotted(name) {
@@ -204,6 +209,11 @@ const AV = (() => {
     // answered the turn in flight. A face that wants to flag a
     // local-model answer reads AV.source; every other face ignores it.
     A.source = raw.source || "";
+    // Live on the bus, not a browser-local setting -- these two control
+    // backtalk's own afplay thinking-cue volume and its actual TTS output
+    // gain, neither of which the browser has any other way to reach.
+    A.thinkingVolume = typeof raw.thinking_volume === "number" ? raw.thinking_volume : 0.35;
+    A.voiceVolume = typeof raw.voice_volume === "number" ? raw.voice_volume : 1.0;
     A.note = (raw.note && (raw.note.text || noteChartPresent(raw.note.chart))) ? raw.note : null;
     A.activity = Array.isArray(raw.activity) ? raw.activity : [];
     A.transcript = Array.isArray(raw.transcript) ? raw.transcript : [];
@@ -421,6 +431,17 @@ const AV = (() => {
       } catch (err) { toast("no server — can't save the paste", false); }
     });
   }
+
+  // Pushes a new thinking-cue or voice-reply volume to the shared bus, for
+  // a face's own slider UI to call. Fire-and-forget: a slider is a live
+  // control, not a form submit waiting on a response.
+  A.setVolume = (kind, value) => {
+    fetch(new URL("volume", ROOT).href, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, value }),
+    }).catch(() => {});
+  };
 
   /* ------------------------------ shot harness ----------------------------- */
   // Runs the face's frame() deterministically (a synchronous burst of t ms).

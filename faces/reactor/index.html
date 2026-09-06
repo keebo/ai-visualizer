@@ -30,11 +30,26 @@ SPDX-License-Identifier: AGPL-3.0-or-later
   #noteText{position:fixed;z-index:40;white-space:pre-wrap;word-wrap:break-word;
     overflow-y:auto;overflow-x:hidden;margin:0;user-select:text;cursor:text;
     opacity:0;pointer-events:none}
+  /* Backtalk's own thinking-cue and TTS-output volume -- neither is a
+     browser setting, so this is real DOM (not canvas) so native range
+     dragging works for free. Hidden until the mouse moves, same reveal
+     pattern as core.js's thinking-sound toggle. */
+  #volCtl{position:fixed;right:18px;top:18px;z-index:45;opacity:0;
+    transition:opacity .4s;pointer-events:none;
+    font:11px 'SF Mono',Menlo,Consolas,monospace;letter-spacing:.15em;
+    color:#5a6a72;text-align:right}
+  #volCtl .row{display:flex;align-items:center;justify-content:flex-end;
+    gap:8px;margin-bottom:4px}
+  #volCtl input[type=range]{width:90px;accent-color:#5ae1ff;cursor:pointer}
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
 <pre id="noteText"></pre>
+<div id="volCtl">
+  <div class="row"><span>THINK</span><input type="range" id="volThink" min="0" max="1" step="0.01"></div>
+  <div class="row"><span>VOICE</span><input type="range" id="volVoice" min="0" max="1" step="0.01"></div>
+</div>
 <script src="../../core.js"></script>
 <script>
 "use strict";
@@ -61,6 +76,25 @@ const Q=new URLSearchParams(location.search);
 const SHOT=Q.get("shot");
 AV.init({mic:true});
 AV.ready(a=>{document.title=a.name+" Arc Reactor";});
+
+/* ---------------- volume sliders: backtalk's thinking-cue + TTS gain ---------------- */
+(function volCtlInit(){
+  const box=document.getElementById("volCtl");
+  const think=document.getElementById("volThink");
+  const voice=document.getElementById("volVoice");
+  // Seeded once from whatever the bus already has (another session's
+  // slider, or the config default) so the handle doesn't jump the
+  // instant the user first touches it.
+  AV.ready(()=>{think.value=AV.thinkingVolume;voice.value=AV.voiceVolume;});
+  think.addEventListener("input",()=>AV.setVolume("thinking",parseFloat(think.value)));
+  voice.addEventListener("input",()=>AV.setVolume("voice",parseFloat(voice.value)));
+  let hideT=null;
+  addEventListener("mousemove",()=>{
+    box.style.opacity=".7";box.style.pointerEvents="auto";
+    clearTimeout(hideT);
+    hideT=setTimeout(()=>{box.style.opacity="0";box.style.pointerEvents="none";},3000);
+  });
+})();
 
 const CYAN=[90,225,255], WHITE=[225,248,255], AMBER=[255,180,70], RED=[255,60,50], GREEN=[61,220,132];
 const STEEL=[150,180,200];

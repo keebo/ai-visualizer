@@ -208,6 +208,10 @@ def mock_bus():
                 "five_hour": {"utilization": 0.34, "resets_at": t + 9200},
                 "seven_day": {"utilization": 0.61, "resets_at": t + 288000},
             },
+            # Real reads, not faked -- a slider should still work against
+            # --mock for UI testing without a live voice line.
+            "thinking_volume": _read_volume(".thinking_volume", 0.35),
+            "voice_volume": _read_volume(".voice_volume", 1.0),
             "source": MOCK_SOURCE, "note": {}, "activity": []}
 
 
@@ -320,10 +324,24 @@ def read_bus():
         source = (BUS / ".voice_source").read_text().strip().lower()
     except OSError:
         pass
+    # backtalk's own afplay thinking-cue volume and TTS output gain --
+    # neither is a browser setting, both live on the bus so a face's
+    # slider can read the current value and POST /volume to change it.
+    thinking_volume = _read_volume(".thinking_volume", 0.35)
+    voice_volume = _read_volume(".voice_volume", 1.0)
     return {"state": state, "level": level, "samples": samples,
             "alert": alert, "loading": loading, "rate_limits": rate_limits,
             "source": source,
+            "thinking_volume": thinking_volume, "voice_volume": voice_volume,
             "note": note, "activity": activity, "transcript": transcript}
+
+
+def _read_volume(filename: str, default: float) -> float:
+    try:
+        v = float((BUS / filename).read_text().strip())
+        return min(1.0, max(0.0, v))
+    except (OSError, ValueError):
+        return default
 
 
 INBOX_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
@@ -337,6 +355,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/inbox":
                 self._inbox()
+            elif path == "/volume":
+                self._volume()
             else:
                 self._send(b"not found", "text/plain", 404)
         except ConnectionError:
@@ -368,6 +388,32 @@ class Handler(BaseHTTPRequestHandler):
             if other != ext:
                 (d / f"latest.{other}").unlink(missing_ok=True)
         self._send(json.dumps({"ok": True, "file": name}).encode(),
+                   "application/json")
+
+    VOLUME_FILES = {"thinking": ".thinking_volume", "voice": ".voice_volume"}
+
+    def _volume(self):
+        # A slider on a face's own UI lands here -- backtalk has no HTTP
+        # server of its own, so the shared bus file is the only channel
+        # back to it. Written as plain text, same as the other single-value
+        # bus files (.voice_state, .voice_source), not JSON.
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+            kind = body.get("kind")
+            value = float(body.get("value"))
+        except (ValueError, TypeError):
+            self._send(json.dumps({"error": "bad body"}).encode(),
+                       "application/json", 400)
+            return
+        filename = self.VOLUME_FILES.get(kind)
+        if not filename:
+            self._send(json.dumps({"error": "bad kind"}).encode(),
+                       "application/json", 400)
+            return
+        value = min(1.0, max(0.0, value))
+        (BUS / filename).write_text(f"{value:.3f}")
+        self._send(json.dumps({"ok": True, "kind": kind, "value": value}).encode(),
                    "application/json")
 
     def do_GET(self):
