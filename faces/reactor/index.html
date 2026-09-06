@@ -269,7 +269,12 @@ function drawThinking(dt,thinkAmt){
   ctx.globalAlpha=1;ctx.textAlign="left";
 }
 function drawStateTag(dt,state,alert){
-  const label=alert?"ALERT":state.toUpperCase();
+  // Flags a local-model (Rosa) turn the same way the board face does --
+  // this face never read AV.source at all before, so Rosa answering
+  // never showed here, only on board. See AV.util in core.js.
+  const local=AV.source==="local";
+  const srcTag=local?" · "+(AV.localName||"LOCAL"):"";
+  const label=(alert?"ALERT":state.toUpperCase())+srcTag;
   if(label!==tagState){tagState=label;stateTag=new D(`${AV.name} // ${label}`,40);}
   const fs=Math.round(Math.min(W,H)*.026);
   ctx.font=`${fs}px ${UI_FONT}`;ctx.textBaseline="alphabetic";
