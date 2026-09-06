@@ -247,7 +247,10 @@ function drawTitle(){
   // the name printed twice rather than as a subtitle.
   ctx.font=`${Math.round(Math.min(W,H)*.058)}px ${UI_FONT}`;
   ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.9)`;
-  ctx.fillText(Array.from(AV.name).join(" "),cx,20);
+  // Swaps to the local model's own name during a Rosa-answered turn,
+  // instead of always reading "C.I.P.H.E.R." regardless of who's live.
+  const titleName=AV.source==="local"?(AV.localName||AV.name):AV.name;
+  ctx.fillText(Array.from(titleName).join(" "),cx,20);
   ctx.textAlign="left";ctx.textBaseline="alphabetic";
 }
 function drawThinking(dt,thinkAmt){
@@ -269,13 +272,16 @@ function drawThinking(dt,thinkAmt){
   ctx.globalAlpha=1;ctx.textAlign="left";
 }
 function drawStateTag(dt,state,alert){
-  // Flags a local-model (Rosa) turn the same way the board face does --
-  // this face never read AV.source at all before, so Rosa answering
-  // never showed here, only on board. See AV.util in core.js.
+  // Swaps the name to Rosa's during a local-model turn instead of
+  // appending a suffix -- "R.O.S.A. // THINKING", not
+  // "C.I.P.H.E.R. // THINKING · R.O.S.A.". Cache key folds in the name
+  // too, so this still refreshes correctly when only the source flips
+  // and the state word stays the same.
   const local=AV.source==="local";
-  const srcTag=local?" · "+(AV.localName||"LOCAL"):"";
-  const label=(alert?"ALERT":state.toUpperCase())+srcTag;
-  if(label!==tagState){tagState=label;stateTag=new D(`${AV.name} // ${label}`,40);}
+  const name=local?(AV.localName||"LOCAL"):AV.name;
+  const label=alert?"ALERT":state.toUpperCase();
+  const key=name+"//"+label;
+  if(key!==tagState){tagState=key;stateTag=new D(`${name} // ${label}`,40);}
   const fs=Math.round(Math.min(W,H)*.026);
   ctx.font=`${fs}px ${UI_FONT}`;ctx.textBaseline="alphabetic";
   ctx.fillStyle=alert?`rgb(${RED[0]},${RED[1]},${RED[2]})`:`rgb(${CYAN[0]*.6|0},${CYAN[1]*.6|0},${CYAN[2]*.6|0})`;
