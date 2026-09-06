@@ -400,6 +400,25 @@ function expandIcon(x,y,s,full,alpha){
   }
   ctx.restore();
 }
+// a box with an arrow breaking out of its top-right corner — the
+// universal "open in a new window" glyph, same stroke-drawn style as
+// the others rather than a font glyph.
+function popoutIcon(x,y,s,alpha){
+  const h=s/2;
+  ctx.save();
+  ctx.strokeStyle=`rgba(${alpha})`;
+  ctx.lineWidth=Math.max(1.3,s*.12);
+  ctx.lineCap="round";ctx.lineJoin="round";
+  ctx.beginPath();
+  ctx.moveTo(x-h*.15,y-h*.75);ctx.lineTo(x-h,y-h*.75);ctx.lineTo(x-h,y+h);
+  ctx.lineTo(x+h*.75,y+h);ctx.lineTo(x+h*.75,y+h*.15);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x-h*.05,y-h*.05);ctx.lineTo(x+h,y-h*.9);
+  ctx.moveTo(x+h*.2,y-h*.9);ctx.lineTo(x+h,y-h*.9);ctx.lineTo(x+h,y-h*.05);
+  ctx.stroke();
+  ctx.restore();
+}
 // down-arrow-into-a-tray — the universal "export/download" glyph, same
 // stroke-based drawn-icon style as minIcon/expandIcon rather than a font
 // glyph, so it never depends on a system font shipping the right symbol.
@@ -1212,10 +1231,15 @@ let now=0,thinkingAmt=0;
    time. Laid out BEFORE the side panels each frame so the rail knows how
    much room to leave, which is what keeps a panel off the captions.
    Scrolls on the wheel and expands to fullscreen like the others. */
-let subsPresence=0,subsScroll=0,subsBounds=null,subsExpandBox=null,subsMinBox=null;
+let subsPresence=0,subsScroll=0,subsBounds=null,subsExpandBox=null,subsMinBox=null,subsPopoutBox=null;
+// The pop-out window itself, or null. Checked every frame (see frame())
+// so the main panel comes back the instant the user closes it, without
+// relying on that window remembering to tell us.
+let subsPopout=null;
 const SUBS_FONT="'SF Mono',Menlo,Consolas,monospace";
 
 function subsLayout(){
+  if(subsPopout&&!subsPopout.closed)return null;
   const items=AV.transcript||[];
   if(!items.length)return null;
   const full=fsPanel==="subs";
@@ -1260,8 +1284,8 @@ function drawSubtitles(dt){
   const L=subsCache;
   const has=!!L;
   subsPresence+=((has?1:0)-subsPresence)*Math.min(1,dt/300);
-  if(subsPresence<.01||!L){subsBounds=null;subsExpandBox=null;return;}
-  if(fsPanel&&fsPanel!=="subs"){subsBounds=null;subsExpandBox=null;return;}
+  if(subsPresence<.01||!L){subsBounds=null;subsExpandBox=null;subsPopoutBox=null;return;}
+  if(fsPanel&&fsPanel!=="subs"){subsBounds=null;subsExpandBox=null;subsPopoutBox=null;return;}
 
   const {lines,fs,lineH,pad,boxW,boxH,x0,y0,titleH,full,mini}=L;
   ctx.save();
@@ -1297,6 +1321,9 @@ function drawSubtitles(dt){
   const exCx=miCx-exS*2-pad*.4;
   expandIcon(exCx,cY,exS,full,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.7`);
   subsExpandBox={x:exCx-exS,y:cY-exS,w:exS*2,h:exS*2};
+  const poCx=exCx-exS*2-pad*.4;
+  popoutIcon(poCx,cY,exS,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.7`);
+  subsPopoutBox={x:poCx-exS,y:cY-exS,w:exS*2,h:exS*2};
 
   ctx.font=`${fs}px ${SUBS_FONT}`;
   ctx.textAlign="left";ctx.textBaseline="alphabetic";
@@ -1375,7 +1402,8 @@ addEventListener("mousemove",e=>{
           ||inBox(termMinBox,e.clientX,e.clientY)
           ||inBox(termExpandBox,e.clientX,e.clientY)
           ||inBox(subsMinBox,e.clientX,e.clientY)
-          ||inBox(subsExpandBox,e.clientX,e.clientY);
+          ||inBox(subsExpandBox,e.clientX,e.clientY)
+          ||inBox(subsPopoutBox,e.clientX,e.clientY);
   cv.style.cursor=hit?"pointer":"default";
 });
 addEventListener("click",e=>{
@@ -1390,6 +1418,17 @@ addEventListener("click",e=>{
   if(inBox(noteCloseBox,e.clientX,e.clientY)){minPanel.note=!minPanel.note;if(fsPanel==="note")fsPanel=null;return;}
   if(inBox(termMinBox,e.clientX,e.clientY)){minPanel.term=!minPanel.term;if(fsPanel==="term")fsPanel=null;return;}
   if(inBox(subsMinBox,e.clientX,e.clientY)){minPanel.subs=!minPanel.subs;if(fsPanel==="subs")fsPanel=null;return;}
+  // The main panel vanishes rather than minimising -- Kevin's ask was a
+  // real separate window, not a second copy of the data on screen. If
+  // it's already open, focus the existing one instead of stacking a
+  // second window on top of it.
+  if(inBox(subsPopoutBox,e.clientX,e.clientY)){
+    if(fsPanel==="subs")fsPanel=null;
+    if(subsPopout&&!subsPopout.closed){subsPopout.focus();return;}
+    subsPopout=window.open("transcript.html","cipherTranscript",
+      "width=440,height=640,menubar=no,toolbar=no,location=no,status=no");
+    return;
+  }
   // expanding a minimised panel restores it, rather than expanding nothing
   if(inBox(noteExpandBox,e.clientX,e.clientY)){minPanel.note=false;toggleFs("note");return;}
   if(inBox(termExpandBox,e.clientX,e.clientY)){minPanel.term=false;toggleFs("term");return;}
