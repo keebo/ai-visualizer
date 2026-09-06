@@ -53,6 +53,13 @@
      AV.voiceVolume     0..1, backtalk's own TTS output gain
      AV.setVolume(kind, value)  kind: "thinking"|"voice" — POSTs a new
                    value to /volume for a face's own slider UI to call
+     AV.silentMode  bool — true means no TTS, no thinking cue, no
+                   push-to-talk; a face's chat box replaces all three
+     AV.setSilentMode(bool)  POSTs the new mode to /mode
+     AV.sendTyped(text)  POSTs one typed line to /type, standing in for
+                   a spoken push-to-talk turn while silent. Returns the
+                   fetch promise so a face can clear its input only once
+                   the send actually succeeds.
 
    Modes:
      live   served by server.py — rides the real signal bus
@@ -214,6 +221,10 @@ const AV = (() => {
     // gain, neither of which the browser has any other way to reach.
     A.thinkingVolume = typeof raw.thinking_volume === "number" ? raw.thinking_volume : 0.35;
     A.voiceVolume = typeof raw.voice_volume === "number" ? raw.voice_volume : 1.0;
+    // No TTS, no thinking cue, no push-to-talk while true -- a face's
+    // chat box (AV.sendTyped) replaces all three. See backtalk's
+    // signals.is_silent_mode()/get_typed_input().
+    A.silentMode = !!raw.silent_mode;
     A.note = (raw.note && (raw.note.text || noteChartPresent(raw.note.chart))) ? raw.note : null;
     A.activity = Array.isArray(raw.activity) ? raw.activity : [];
     A.transcript = Array.isArray(raw.transcript) ? raw.transcript : [];
@@ -441,6 +452,28 @@ const AV = (() => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind, value }),
     }).catch(() => {});
+  };
+
+  // Toggles silent mode. Fire-and-forget, same reasoning as setVolume --
+  // the next /state poll (120ms) reflects the real value regardless.
+  A.setSilentMode = (silent) => {
+    fetch(new URL("mode", ROOT).href, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ silent }),
+    }).catch(() => {});
+  };
+
+  // Submits one typed line from a face's chat box, standing in for a
+  // spoken push-to-talk turn while silent. Returns the fetch promise
+  // (unlike setVolume/setSilentMode) so a face can clear its input box
+  // only once the send actually succeeds, not optimistically.
+  A.sendTyped = (text) => {
+    return fetch(new URL("type", ROOT).href, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
   };
 
   /* ------------------------------ shot harness ----------------------------- */

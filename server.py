@@ -212,7 +212,15 @@ def mock_bus():
             # --mock for UI testing without a live voice line.
             "thinking_volume": _read_volume(".thinking_volume", 0.35),
             "voice_volume": _read_volume(".voice_volume", 1.0),
+            "silent_mode": _read_silent_mode(),
             "source": MOCK_SOURCE, "note": {}, "activity": []}
+
+
+def _read_silent_mode() -> bool:
+    try:
+        return (BUS / ".silent_mode").read_text().strip() == "1"
+    except OSError:
+        return False
 
 
 def _marker_pid(path: Path) -> int | None:
@@ -329,10 +337,15 @@ def read_bus():
     # slider can read the current value and POST /volume to change it.
     thinking_volume = _read_volume(".thinking_volume", 0.35)
     voice_volume = _read_volume(".voice_volume", 1.0)
+    # Silent mode: no TTS, no thinking cue, no push-to-talk -- a face's
+    # chat box (POST /type) replaces all three. See backtalk's
+    # signals.is_silent_mode()/get_typed_input().
+    silent_mode = _read_silent_mode()
     return {"state": state, "level": level, "samples": samples,
             "alert": alert, "loading": loading, "rate_limits": rate_limits,
             "source": source,
             "thinking_volume": thinking_volume, "voice_volume": voice_volume,
+            "silent_mode": silent_mode,
             "note": note, "activity": activity, "transcript": transcript}
 
 
@@ -357,6 +370,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._inbox()
             elif path == "/volume":
                 self._volume()
+            elif path == "/mode":
+                self._mode()
+            elif path == "/type":
+                self._type()
             else:
                 self._send(b"not found", "text/plain", 404)
         except ConnectionError:
@@ -415,6 +432,48 @@ class Handler(BaseHTTPRequestHandler):
         (BUS / filename).write_text(f"{value:.3f}")
         self._send(json.dumps({"ok": True, "kind": kind, "value": value}).encode(),
                    "application/json")
+
+    def _mode(self):
+        # Silent/Voice toggle -- backtalk's is_silent_mode() reads this
+        # same file. No TTS, no thinking cue, no push-to-talk while "1".
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+            silent = bool(body.get("silent"))
+        except (ValueError, TypeError):
+            self._send(json.dumps({"error": "bad body"}).encode(),
+                       "application/json", 400)
+            return
+        (BUS / ".silent_mode").write_text("1" if silent else "0")
+        self._send(json.dumps({"ok": True, "silent": silent}).encode(),
+                   "application/json")
+
+    TYPE_MAX = 4000
+
+    def _type(self):
+        # Silent mode's chat box -- backtalk's get_typed_input() reads
+        # and clears this same file, treating it as one first-class turn,
+        # same as a spoken utterance. Not a queue: one pending message at
+        # a time, matching how a chat box is actually used (send, wait
+        # for the reply, send the next).
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0 or length > self.TYPE_MAX:
+            self._send(json.dumps({"error": "bad length"}).encode(),
+                       "application/json", 400)
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+            text = str(body.get("text", "")).strip()
+        except (ValueError, TypeError):
+            self._send(json.dumps({"error": "bad body"}).encode(),
+                       "application/json", 400)
+            return
+        if not text:
+            self._send(json.dumps({"error": "empty text"}).encode(),
+                       "application/json", 400)
+            return
+        (BUS / ".typed_input").write_text(text)
+        self._send(json.dumps({"ok": True}).encode(), "application/json")
 
     def do_GET(self):
         path = self.path.split("?")[0]

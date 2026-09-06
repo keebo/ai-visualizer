@@ -47,6 +47,19 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     cursor:pointer;text-align:center}
   #volCtl .stepbtn:hover{background:rgba(90,225,255,.28)}
   #volCtl .val{display:inline-block;width:34px;text-align:right;color:#5ae1ff}
+  #volCtl .modebtn{width:100%;margin-top:6px;padding:4px 6px;
+    background:rgba(90,225,255,.12);border:1px solid rgba(90,225,255,.4);
+    border-radius:3px;color:#bfe9f5;font:11px 'SF Mono',Menlo,Consolas,monospace;
+    letter-spacing:.15em;cursor:pointer;text-align:center}
+  #volCtl .modebtn:hover{background:rgba(90,225,255,.28)}
+  #volCtl .modebtn.silent{border-color:rgba(255,180,70,.65);color:#ffce9e}
+  #chatRow{display:none;margin-top:6px}
+  #chatRow.show{display:block}
+  #chatInput{width:100%;background:rgba(2,10,18,.85);
+    border:1px solid rgba(90,225,255,.4);border-radius:3px;color:#d8e6ec;
+    font:12px 'SF Mono',Menlo,Consolas,monospace;letter-spacing:0;
+    padding:5px 7px;text-align:left}
+  #chatInput:focus{outline:none;border-color:#5ae1ff}
 </style>
 </head>
 <body>
@@ -63,6 +76,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     <input type="range" id="volVoice" min="0" max="1" step="0.01">
     <button class="stepbtn" data-target="volVoice" data-dir="1">+</button>
     <span class="val" id="volVoiceVal">--</span></div>
+  <button class="modebtn" id="modeBtn">VOICE MODE</button>
+  <div id="chatRow"><input type="text" id="chatInput" placeholder="Type your message…"></div>
 </div>
 <script src="../../core.js"></script>
 <script>
@@ -97,7 +112,7 @@ const volThink=document.getElementById("volThink");
 const volVoice=document.getElementById("volVoice");
 const volThinkVal=document.getElementById("volThinkVal");
 const volVoiceVal=document.getElementById("volVoiceVal");
-const VOL_STEP=0.05;   // per arrow click -- finer, reliable control beyond
+const VOL_STEP=0.01;   // per arrow click -- finer, reliable control beyond
                        // what a mouse drag on the slider itself can land on
 function pct(v){return Math.round(v*100)+"%";}
 function syncVolLabel(kind){
@@ -128,17 +143,61 @@ for(const btn of document.querySelectorAll("#volCtl .stepbtn")){
   });
 }
 let volHideT=null;
-function volHide(){volBox.style.opacity="0";volBox.style.pointerEvents="none";}
+// Fullscreen-panel-overlap avoidance always wins, silent mode or not --
+// this is the exact click-collision bug fixed 2026-09-06 (see below),
+// and reintroducing it for silent mode would just move the bug rather
+// than fix it. volHide() (the idle-timeout path) respects silent mode;
+// forceVolHide() (the panel-overlap path) never does.
+function forceVolHide(){volBox.style.opacity="0";volBox.style.pointerEvents="none";}
+function volHide(){
+  if(AV.silentMode)return;   // silent mode's chat box stays up regardless
+  forceVolHide();
+}
 addEventListener("mousemove",()=>{
   // A fullscreen panel's own controls (note/terminal/transcript expand
   // and minimise) live in this same top-right corner -- found 2026-09-06
   // when a maximised transcript's minimise click landed on this box
   // instead, sitting on top of it. Never reveal over a fullscreen panel.
-  if(fsPanel){volHide();return;}
+  if(fsPanel){forceVolHide();return;}
   volBox.style.opacity=".7";volBox.style.pointerEvents="auto";
   clearTimeout(volHideT);
   volHideT=setTimeout(volHide,3000);
 });
+
+/* ---------------- silent mode: chat box replaces push-to-talk ---------------- */
+const modeBtn=document.getElementById("modeBtn");
+const chatRow=document.getElementById("chatRow");
+const chatInput=document.getElementById("chatInput");
+let lastSilentSeen=null;   // triggers the UI sync below only on a real change
+modeBtn.addEventListener("click",()=>AV.setSilentMode(!AV.silentMode));
+chatInput.addEventListener("keydown",(e)=>{
+  if(e.key!=="Enter")return;
+  const text=chatInput.value.trim();
+  if(!text)return;
+  chatInput.disabled=true;
+  AV.sendTyped(text).then(()=>{chatInput.value="";})
+    .catch(()=>{})
+    .finally(()=>{chatInput.disabled=false;chatInput.focus();});
+});
+function syncSilentUI(){
+  if(AV.silentMode===lastSilentSeen)return;
+  lastSilentSeen=AV.silentMode;
+  if(AV.silentMode){
+    modeBtn.textContent="SILENT MODE";
+    modeBtn.classList.add("silent");
+    chatRow.classList.add("show");
+    // The reveal-on-hover box needs to actually be visible for the chat
+    // box to be usable the instant the mode flips, not just un-hidden
+    // the next time the mouse happens to move.
+    volBox.style.opacity=".9";volBox.style.pointerEvents="auto";
+    clearTimeout(volHideT);
+    chatInput.focus();
+  }else{
+    modeBtn.textContent="VOICE MODE";
+    modeBtn.classList.remove("silent");
+    chatRow.classList.remove("show");
+  }
+}
 
 const CYAN=[90,225,255], WHITE=[225,248,255], AMBER=[255,180,70], RED=[255,60,50], GREEN=[61,220,132];
 const STEEL=[150,180,200];
@@ -1382,10 +1441,11 @@ function drawSubtitles(dt){
 function frame(dt){
   AV.tick(dt);
   now+=dt;
+  syncSilentUI();
   // Belt-and-suspenders on top of the mousemove check above: catches the
   // narrow instant a panel becomes fullscreen while the sliders already
   // happened to be visible, with no mousemove in between to react to it.
-  if(fsPanel&&volBox.style.pointerEvents!=="none")volHide();
+  if(fsPanel&&volBox.style.pointerEvents!=="none")forceVolHide();
   const state=AV.state, alert=AV.alert;
   // Listening owns the whole screen — that's the point of it (see the
   // file header). A fullscreen note/terminal/subs panel left open from
