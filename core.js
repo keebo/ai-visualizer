@@ -25,6 +25,8 @@
    fields every animation frame after calling AV.tick(dtMs):
 
      AV.state      "idle" | "listening" | "thinking" | "working" | "speaking"
+     AV.stateElapsed  ms since AV.state last changed — a face can use
+                   this to surface "still working, Ns" on a long thinking
      AV.level      0..1 raw voice loudness (speaking only)
      AV.env        0..1 smoothed speech envelope (attack/release eased,
                    adaptively normalized — use this for motion)
@@ -39,6 +41,14 @@
                    local_llm.enabled is on
      AV.localName  the local model's own name from config
                    (ai-visualizer.json's local_name), "" if unset
+     AV.note       {title,text} or null — free text dropped on the bus
+                   (.agent_note) by whatever is driving the session, for
+                   a face to render as a HUD panel; null when empty
+     AV.transcript [{ts,role,text}, ...], oldest first, the spoken
+                   conversation as captions (.voice_transcript)
+     AV.activity   [{ts,tool,detail}, ...], oldest first, kept by a
+                   PreToolUse hook (.agent_activity) — a live "what is
+                   Jarvis doing" feed a face can render as a terminal
 
    Modes:
      live   served by server.py — rides the real signal bus
@@ -56,6 +66,12 @@
    (.voice_loading_pid), this player stays quiet — you never hear it
    twice. The speaker button (bottom left) toggles it; browsers may
    require one click on the page before audio is allowed.
+
+   The paste inbox: Ctrl+V anywhere on the page with an image on the
+   clipboard (a Win+Shift+S snip, say) POSTs it to /inbox, no click to
+   open anything first. A toast confirms the save; server.py writes it
+   to inbox/latest.<ext> under the bus dir for whatever is driving the
+   session to pick up.
    ============================================================ */
 "use strict";
 
@@ -70,6 +86,7 @@ const AV = (() => {
 
   const A = {
     state: "idle", level: 0, env: 0, alert: false, micLevel: 0,
+    stateElapsed: 0, note: null, activity: [], transcript: [],
     samples: new Float32Array(64),
     name: "JARVIS", label: "J.A.R.V.I.S.", badge: "",
     demo: DEMO, shot: SHOT, faces: [],
@@ -151,11 +168,28 @@ const AV = (() => {
         * Math.abs(Math.sin(tt * 0.61));
   }
 
+  // A chart is present if it carries rows a face could actually draw —
+  // a flat/pie series ("data"), at least one grouped-bar series with rows
+  // ("bars"), or at least one named network ("networks", topology) —
+  // independent of which face is looking at it.
+  function noteChartPresent(c) {
+    if (!c) return false;
+    if (Array.isArray(c.data) && c.data.length) return true;
+    if (Array.isArray(c.bars) && c.bars.some(b => Array.isArray(b.data) && b.data.length)) return true;
+    if (Array.isArray(c.networks) && c.networks.length) return true;
+    return false;
+  }
+
   /* ----------------------- envelope + samples easing ----------------------- */
   let peak = 0.05, sPeak = 200;
+  let stateSince = 0;
   function tick(dt) {
     if (DEMO) demoUpdate(dt);
-    A.state = raw.state || "idle";
+    const st = raw.state || "idle";
+    if (st !== A.state) stateSince = 0;
+    A.state = st;
+    stateSince += dt;
+    A.stateElapsed = stateSince;
     A.alert = !!raw.alert;
     // Empty unless the voice line was told to publish usage. A face that
     // wants to draw it reads AV.rateLimits; every other face ignores it.
@@ -164,6 +198,9 @@ const AV = (() => {
     // answered the turn in flight. A face that wants to flag a
     // local-model answer reads AV.source; every other face ignores it.
     A.source = raw.source || "";
+    A.note = (raw.note && (raw.note.text || noteChartPresent(raw.note.chart))) ? raw.note : null;
+    A.activity = Array.isArray(raw.activity) ? raw.activity : [];
+    A.transcript = Array.isArray(raw.transcript) ? raw.transcript : [];
     A.level = raw.level || 0;
     if (A.state === "speaking") A._lastSpeakingT = performance.now();
 
@@ -293,6 +330,51 @@ const AV = (() => {
     }
   }
 
+  /* ------------------------------ paste inbox ------------------------------ */
+  // Paste an image anywhere on the page (Ctrl+V — a Win+Shift+S snip is
+  // already on the clipboard) and it's POSTed straight to /inbox, no
+  // click-to-open step. A small toast confirms it landed; the file itself
+  // goes to the bus at inbox/latest.<ext> for whatever is driving the
+  // session to read.
+  let toastEl = null, toastT = null;
+  function toast(msg, ok) {
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.style.cssText =
+        "position:fixed;left:50%;bottom:54px;transform:translateX(-50%);" +
+        "z-index:60;padding:10px 18px;border-radius:6px;border:1px solid;" +
+        "font:14px 'SF Mono',Menlo,Consolas,monospace;letter-spacing:.03em;" +
+        "background:rgba(10,14,18,.92);opacity:0;transition:opacity .25s;" +
+        "pointer-events:none;white-space:nowrap";
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.style.borderColor = ok ? "#3a9" : "#a53";
+    toastEl.style.color = ok ? "#8fd" : "#f98";
+    toastEl.style.opacity = "1";
+    clearTimeout(toastT);
+    toastT = setTimeout(() => { toastEl.style.opacity = "0"; }, 3200);
+  }
+  function pasteInit() {
+    addEventListener("paste", async (e) => {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      let file = null;
+      for (const it of items) if (it.type.startsWith("image/")) file = it.getAsFile();
+      if (!file) return;
+      e.preventDefault();
+      try {
+        const r = await fetch(new URL("inbox", ROOT).href, {
+          method: "POST",
+          headers: { "Content-Type": file.type || "image/png" },
+          body: file,
+        });
+        const j = await r.json();
+        toast(j.ok ? `saved ${j.file} — tell Jarvis to look` : "save failed", !!j.ok);
+      } catch (err) { toast("no server — can't save the paste", false); }
+    });
+  }
+
   /* ------------------------------ shot harness ----------------------------- */
   // Runs the face's frame() deterministically (a synchronous burst of t ms).
   // A headless browser resizes the window and finishes loading images AFTER
@@ -317,6 +399,7 @@ const AV = (() => {
     A._mic = !!opts.mic;
     if (A._mic && !DEMO) micStart();
     if (opts.sound !== false) soundInit(); else A._sndWant = false;
+    pasteInit();
     if (DEMO) {
       applyConfig({ name: Q.get("name") || "JARVIS" });
     } else {

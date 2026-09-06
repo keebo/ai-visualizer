@@ -1,0 +1,1368 @@
+<!DOCTYPE html>
+<!--
+ai-visualizer: give your AI agent a face.
+Copyright (C) 2026 Jared Rhodenizer
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Arc Reactor</title>
+<style>
+  @font-face{font-family:"Orbitron";src:url("../../assets/Orbitron-Variable.ttf")}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;background:#01050a;overflow:hidden}
+  canvas#stage{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #noteText{position:fixed;z-index:40;white-space:pre-wrap;word-wrap:break-word;
+    overflow-y:auto;overflow-x:hidden;margin:0;user-select:text;cursor:text;
+    opacity:0;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<pre id="noteText"></pre>
+<script src="../../core.js"></script>
+<script>
+"use strict";
+/* ============================================================
+   ARC REACTOR  ·  the Stark-HUD face
+   A glowing reactor core at the center of a rotating armored ring,
+   waveform spokes discharging off it on the voice, a faint HUD grid
+   turning behind everything. Idle it just breathes; listening takes
+   over the ENTIRE screen instead of a corner widget.
+
+   idle       slow breathing core, slow ring rotation, faint grid
+   listening  the whole screen becomes the mic meter: a full-width
+              waveform band and a wash of light, not a corner ribbon
+   thinking   rings spin up, amber status word descrambles in
+   speaking   core pulses on the live envelope, radial spokes
+              discharge on the waveform ring
+   alert      everything shifts red, pulsing frame
+
+   Font is Orbitron (OFL, self-hosted in assets/) for the HUD
+   lettering. Keys: F = fullscreen.
+   ============================================================ */
+
+const Q=new URLSearchParams(location.search);
+const SHOT=Q.get("shot");
+AV.init({mic:true});
+AV.ready(a=>{document.title=a.name+" Arc Reactor";});
+
+const CYAN=[90,225,255], WHITE=[225,248,255], AMBER=[255,180,70], RED=[255,60,50];
+const STEEL=[150,180,200];
+const UI_FONT="'Orbitron',sans-serif";
+const THINKING_WORDS=["PROCESSING","THINKING","QUERYING MEMORY","COMPILING RESPONSE","RUNNING IT DOWN"];
+const D=AV.util.Descrambler;
+
+const cv=document.getElementById("stage");
+// reassignable — PDF export points this at an offscreen canvas for one
+// render pass so it can reuse the exact same draw functions, then hands
+// it straight back. See exportNoteToPdf().
+let ctx=cv.getContext("2d");
+let W=0,H=0,cx=0,cy=0;
+
+/* ---------------- HUD grid backdrop ---------------- */
+function drawGrid(t){
+  ctx.strokeStyle="rgba(70,150,190,.10)";
+  ctx.lineWidth=1;
+  for(let r=60;r<Math.max(W,H);r+=70){
+    ctx.beginPath();ctx.arc(cx,cy,r,0,6.2832);ctx.stroke();
+  }
+  ctx.save();
+  ctx.translate(cx,cy);ctx.rotate(t*0.00002);
+  for(let i=0;i<24;i++){
+    const a=i/24*6.2832;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a)*60,Math.sin(a)*60);
+    ctx.lineTo(Math.cos(a)*Math.max(W,H),Math.sin(a)*Math.max(W,H));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ---------------- reactor core ---------------- */
+let ring1=0,ring2=0,corePulse=0,breathPhase=0;
+function drawReactor(dt,state,env,alert){
+  const spinK=state==="thinking"?3.2:state==="speaking"?1.3:0.4;
+  ring1+=spinK*dt/1000;
+  ring2-=spinK*0.6*dt/1000;
+  breathPhase+=dt/1000;
+  const R=Math.min(W,H)*.16;
+  // housing (rings, teeth, rivets) stays fixed steel — only the energy
+  // (glow, core, spokes) carries the state color, so the two never fight
+  const col=alert?RED:AMBER;
+  const hot=AV.util.mix(col,WHITE,.55);
+  const breathe=.5+.5*Math.sin(breathPhase*1.1);
+  const target=state==="speaking"?(.55+.75*env):breathe*.7;
+  corePulse+=(target-corePulse)*Math.min(1,dt/220);
+
+  // outer housing: toothed ring boxed by two crisp rim lines, plus rivets
+  ctx.save();ctx.translate(cx,cy);ctx.rotate(ring1);
+  for(let i=0;i<16;i++){
+    const a0=i/16*6.2832+.02, a1=(i+1)/16*6.2832-.02;
+    ctx.strokeStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},${.35+.35*corePulse})`;
+    ctx.lineWidth=R*.14;
+    ctx.beginPath();ctx.arc(0,0,R*1.55,a0,a1);ctx.stroke();
+  }
+  ctx.strokeStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.55)`;
+  ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.arc(0,0,R*1.55+R*.08,0,6.2832);ctx.stroke();
+  ctx.beginPath();ctx.arc(0,0,R*1.55-R*.08,0,6.2832);ctx.stroke();
+  ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.75)`;
+  for(let i=0;i<8;i++){
+    const a=i/8*6.2832;
+    ctx.beginPath();ctx.arc(Math.cos(a)*R*1.78,Math.sin(a)*R*1.78,Math.max(1.5,R*.025),0,6.2832);ctx.fill();
+  }
+  ctx.restore();
+
+  // turbine ring (fine teeth) + a slower gear ring (chunky teeth) inside it
+  ctx.save();ctx.translate(cx,cy);ctx.rotate(ring2);
+  ctx.strokeStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.55)`;
+  ctx.lineWidth=2;
+  for(let i=0;i<40;i++){
+    const a=i/40*6.2832;
+    const r1=R*1.18,r2=R*1.30;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a)*r1,Math.sin(a)*r1);
+    ctx.lineTo(Math.cos(a)*r2,Math.sin(a)*r2);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  ctx.save();ctx.translate(cx,cy);ctx.rotate(-ring2*.5);
+  const nTeeth=20;
+  for(let i=0;i<nTeeth;i++){
+    const a=i/nTeeth*6.2832, w=6.2832/nTeeth*.32;
+    const rOut=i%2===0?R*.97:R*.88, rIn=R*.78;
+    ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},${.5+.35*corePulse})`;
+    ctx.beginPath();
+    ctx.arc(0,0,rOut,a-w,a+w);
+    ctx.arc(0,0,rIn,a+w,a-w,true);
+    ctx.closePath();ctx.fill();
+  }
+  ctx.restore();
+
+  const glowR=R*(1+corePulse*.5);
+  const grd=ctx.createRadialGradient(cx,cy,0,cx,cy,glowR*2.2);
+  grd.addColorStop(0,`rgba(${hot[0]},${hot[1]},${hot[2]},${.9*corePulse+.15})`);
+  grd.addColorStop(.35,`rgba(${col[0]},${col[1]},${col[2]},${.55*corePulse+.1})`);
+  grd.addColorStop(1,"rgba(0,0,0,0)");
+  ctx.fillStyle=grd;
+  ctx.beginPath();ctx.arc(cx,cy,glowR*2.2,0,6.2832);ctx.fill();
+
+  ctx.save();ctx.translate(cx,cy);
+  ctx.strokeStyle=`rgba(${col[0]},${col[1]},${col[2]},${.6*corePulse+.25})`;
+  ctx.lineWidth=Math.max(1,R*.025);
+  ctx.beginPath();ctx.arc(0,0,R*.62,0,6.2832);ctx.stroke();
+  ctx.strokeStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},${.65*corePulse+.15})`;
+  ctx.lineWidth=Math.max(1,R*.03);
+  const nTick=32;
+  for(let i=0;i<nTick;i++){
+    const a=i/nTick*6.2832;
+    const r1=R*.46,r2=R*.54;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a)*r1,Math.sin(a)*r1);
+    ctx.lineTo(Math.cos(a)*r2,Math.sin(a)*r2);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // glossy specular sheen, off-center like light hitting curved glass
+  const hlGrd=ctx.createRadialGradient(cx-R*.18,cy-R*.18,0,cx-R*.18,cy-R*.18,R*.55);
+  hlGrd.addColorStop(0,`rgba(${hot[0]},${hot[1]},${hot[2]},${.4*corePulse+.05})`);
+  hlGrd.addColorStop(1,`rgba(${hot[0]},${hot[1]},${hot[2]},0)`);
+  ctx.fillStyle=hlGrd;
+  ctx.beginPath();ctx.arc(cx,cy,R*.62,0,6.2832);ctx.fill();
+
+  ctx.fillStyle=`rgba(${hot[0]},${hot[1]},${hot[2]},.95)`;
+  ctx.beginPath();ctx.arc(cx,cy,R*.22*(0.7+.3*corePulse),0,6.2832);ctx.fill();
+
+  return R;
+}
+
+/* ---------------- equalizer spokes (waveform-driven) ---------------- */
+function drawSpokes(R,samples,env,alert,state){
+  if(state!=="speaking")return;
+  const col=alert?RED:AMBER;
+  const n=samples.length;
+  for(let i=0;i<n;i++){
+    const a=i/n*6.2832;
+    const len=R*.5*samples[i]*(.4+env);
+    if(len<2)continue;
+    const r1=R*1.62;
+    const x1=cx+Math.cos(a)*r1, y1=cy+Math.sin(a)*r1;
+    const x2=cx+Math.cos(a)*(r1+len), y2=cy+Math.sin(a)*(r1+len);
+    ctx.strokeStyle=`rgba(${col[0]},${col[1]},${col[2]},${.25+.55*samples[i]})`;
+    ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  }
+}
+
+/* ---------------- listening: takes the whole screen ---------------- */
+let listenHist=[];
+function drawListening(){
+  listenHist.push(AV.micLevel);
+  const span=Math.max(80,W/4|0);
+  if(listenHist.length>span)listenHist=listenHist.slice(-span);
+  ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.05)`;
+  ctx.fillRect(0,0,W,H);
+  const midY=H*.55, amp=H*.22, step=W/span;
+  for(let i=0;i<listenHist.length;i++){
+    const bh=Math.max(2,listenHist[i]*amp);
+    const x=i*step;
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.75)`;
+    ctx.fillRect(x,midY-bh,Math.max(2,step-1),bh*2);
+  }
+  ctx.save();
+  ctx.globalCompositeOperation="lighter";
+  ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.12)`;
+  ctx.fillRect(0,midY-amp*1.3,W,amp*2.6);
+  ctx.restore();
+  ctx.font=`${Math.round(Math.min(W,H)*.09)}px ${UI_FONT}`;
+  ctx.textAlign="center";ctx.textBaseline="middle";
+  ctx.fillStyle=`rgba(${WHITE[0]},${WHITE[1]},${WHITE[2]},.9)`;
+  ctx.fillText("LISTENING",W/2,H*.20);
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+}
+
+/* ---------------- lettering + chrome ---------------- */
+let thinkLabel=null, stateTag=null, tagState="";
+function drawTitle(){
+  ctx.textAlign="center";ctx.textBaseline="top";
+  // One name only. The dotted AV.label was drawn underneath, which read as
+  // the name printed twice rather than as a subtitle.
+  ctx.font=`${Math.round(Math.min(W,H)*.058)}px ${UI_FONT}`;
+  ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.9)`;
+  ctx.fillText(Array.from(AV.name).join(" "),cx,20);
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+}
+function drawThinking(dt,thinkAmt){
+  if(!thinkLabel||thinkLabel.done)
+    thinkLabel=new D(THINKING_WORDS[Math.random()*THINKING_WORDS.length|0],70,1400);
+  const txt=thinkLabel.render(dt);
+  const fs=Math.round(Math.min(W,H)*.045);
+  ctx.font=`${fs}px ${UI_FONT}`;
+  ctx.textAlign="center";ctx.textBaseline="top";
+  ctx.globalAlpha=Math.min(1,thinkAmt);
+  ctx.fillStyle=`rgb(${AMBER[0]},${AMBER[1]},${AMBER[2]})`;
+  ctx.fillText(txt,W/2,H*.14);
+  if(AV.state==="thinking"&&AV.stateElapsed>10000){
+    const secs=Math.floor(AV.stateElapsed/1000);
+    ctx.font=`${Math.round(fs*.5)}px ${UI_FONT}`;
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.7)`;
+    ctx.fillText(`${secs}s`,W/2,H*.14+fs*1.25);
+  }
+  ctx.globalAlpha=1;ctx.textAlign="left";
+}
+function drawStateTag(dt,state,alert){
+  const label=alert?"ALERT":state.toUpperCase();
+  if(label!==tagState){tagState=label;stateTag=new D(`${AV.name} // ${label}`,40);}
+  const fs=Math.round(Math.min(W,H)*.026);
+  ctx.font=`${fs}px ${UI_FONT}`;ctx.textBaseline="alphabetic";
+  ctx.fillStyle=alert?`rgb(${RED[0]},${RED[1]},${RED[2]})`:`rgb(${CYAN[0]*.6|0},${CYAN[1]*.6|0},${CYAN[2]*.6|0})`;
+  ctx.fillText(stateTag.render(dt),18,H-16);
+}
+function drawUsage(){
+  const rows=AV.util.usageRows();
+  if(!rows.length)return;
+  const fs=Math.round(Math.min(W,H)*.02);
+  ctx.save();
+  ctx.font=`${fs}px ${UI_FONT}`;
+  ctx.textAlign="right";ctx.textBaseline="alphabetic";
+  let y=H-16-(rows.length-1)*(fs+4);
+  for(const r of rows){
+    ctx.fillStyle=r.hot?`rgb(${RED[0]},${RED[1]},${RED[2]})`:`rgb(${CYAN[0]},${CYAN[1]},${CYAN[2]})`;
+    ctx.fillText(`${r.label} ${r.text}`,W-18,y);
+    y+=fs+4;
+  }
+  ctx.restore();
+}
+/* ---------------- note panel: whatever's driving the session can post text ----------------
+   The body text is a REAL DOM element laid over the canvas, not fillText —
+   canvas pixels can't be selected or copied, and a pasted PowerShell command
+   is exactly the case where that matters. Canvas still draws the frame and
+   title bar; this div only owns the body, sized to it every frame. */
+/* A drawn expand/collapse control rather than the word FULLSCREEN. The word
+   ate a third of a 480px title bar and collided with any real title; corner
+   brackets read instantly, cost ~14px, and cannot be missing from a font. */
+/* One chamfered panel shape for the whole HUD.
+
+   This existed as three copy-pasted blocks with two different hardcoded
+   corner sizes, which is exactly how the fill came to escape the border:
+   a clip() was added to the note panel and the other two copies never got
+   it. The title bar of every panel is painted with a plain fillRect, so
+   without a clip its square corners paint straight over the cuts, and a
+   minimised panel IS its title bar, which is where it showed worst.
+
+   Builds the path and leaves it current, so the caller can fill, stroke
+   and clip() the same geometry. */
+function panelCut(w,h){
+  // proportional so panels match at any resolution, and never more than a
+  // third of the shorter side: a minimised bar is only ~44px tall, and two
+  // cuts that meet in the middle turn the frame into a bow tie.
+  return Math.max(6,Math.min(Math.round(Math.min(W,H)*.013),Math.floor(Math.min(w,h)/3)));
+}
+function panelPath(x,y,w,h,cut){
+  ctx.beginPath();
+  ctx.moveTo(x+cut,y);ctx.lineTo(x+w-cut,y);
+  ctx.lineTo(x+w,y+cut);ctx.lineTo(x+w,y+h-cut);
+  ctx.lineTo(x+w-cut,y+h);ctx.lineTo(x+cut,y+h);
+  ctx.lineTo(x,y+h-cut);ctx.lineTo(x,y+cut);ctx.closePath();
+}
+
+function minIcon(x,y,s,mini,alpha){
+  // a bar, low in the box: the universal minimise. When already minimised it
+  // gains a roof, so the same control reads as "restore" without a second icon.
+  ctx.save();
+  ctx.strokeStyle=`rgba(${alpha})`;
+  ctx.lineWidth=Math.max(1.3,s*.12);
+  ctx.lineCap="round";
+  const h=s/2;
+  ctx.beginPath();ctx.moveTo(x-h,y+h*.55);ctx.lineTo(x+h,y+h*.55);ctx.stroke();
+  if(mini){ctx.beginPath();ctx.moveTo(x-h,y-h*.45);ctx.lineTo(x+h,y-h*.45);ctx.stroke();}
+  ctx.restore();
+}
+function expandIcon(x,y,s,full,alpha){
+  const h=s/2, a=s*.36, inset=full?a*.9:0;
+  ctx.save();
+  ctx.strokeStyle=`rgba(${alpha})`;
+  ctx.lineWidth=Math.max(1.3,s*.12);
+  ctx.lineCap="round";
+  for(const [sx,sy] of [[-1,-1],[1,-1],[-1,1],[1,1]]){
+    const px=x+sx*(h-inset), py=y+sy*(h-inset);
+    ctx.beginPath();
+    ctx.moveTo(px-sx*a,py);ctx.lineTo(px,py);ctx.lineTo(px,py-sy*a);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+// down-arrow-into-a-tray — the universal "export/download" glyph, same
+// stroke-based drawn-icon style as minIcon/expandIcon rather than a font
+// glyph, so it never depends on a system font shipping the right symbol.
+function pdfIcon(x,y,s,alpha){
+  const h=s/2;
+  ctx.save();
+  ctx.strokeStyle=`rgba(${alpha})`;
+  ctx.lineWidth=Math.max(1.3,s*.12);
+  ctx.lineCap="round";ctx.lineJoin="round";
+  ctx.beginPath();ctx.moveTo(x,y-h);ctx.lineTo(x,y+h*.2);ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x-h*.55,y-h*.15);ctx.lineTo(x,y+h*.5);ctx.lineTo(x+h*.55,y-h*.15);
+  ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x-h,y+h*.8);ctx.lineTo(x+h,y+h*.8);ctx.stroke();
+  ctx.restore();
+}
+
+/* ---------------- shared HUD rail ----------------
+   Both side panels occupy the SAME rectangle, mirrored: same width, same
+   top, same bottom. That is what makes the HUD read as one instrument
+   instead of two widgets that happened to land near each other. The rail
+   stops above the caption bar, so a panel can never draw over the
+   subtitles. Only ONE panel may be fullscreen at a time and the others
+   stand down completely while it is, which is what stops the panel
+   underneath bleeding through the one on top. */
+let fsPanel=null;                 // null | "note" | "term" | "subs"
+// Minimised, not closed: a panel collapses to its own title bar and stays
+// there, so nothing is ever thrown away and the control that hid it is the
+// control that brings it back.
+let minPanel={note:false,term:false,subs:false};
+let RAIL={w:0,top:0,bottom:0,h:0,left:0,right:0};
+let subsCache=null;               // this frame's caption geometry
+function computeRail(){
+  const m=Math.min(W,H);
+  const w=Math.min(W*.27,480);
+  const top=Math.round(m*.17);
+  const capH=subsCache?subsCache.boxH:0;
+  const floor=capH?(H-m*.085-capH):(H-m*.075);
+  const bottom=Math.round(floor-m*.02);
+  RAIL={w,top,bottom,h:Math.max(Math.round(m*.2),bottom-top),
+        left:Math.round(m*.03),right:Math.round(W-m*.03-w)};
+}
+
+let notePresence=0;
+const noteTextEl=document.getElementById("noteText");
+// A note can carry a chart (a list of {label,value} bars) instead of, or
+// above, its text. Same bus file, same panel — a chart is drawn straight
+// onto the canvas (it's not selectable text, so it doesn't need the DOM
+// element the way the body copy does), and it eats the top of the body
+// area; any text that came with it fills whatever room is left below.
+// Four chart shapes share the bus field: "bar" (default, a flat list —
+// drawChartBars), "combo" (grouped bars plus one line on its own right-
+// hand axis — drawChartCombo, for series on incompatible scales), "pie"
+// (drawChartPie), and "topology" (drawChartTopology, nested boxes for
+// network/hierarchy layouts). Type is inferred from shape when `type` is
+// omitted, so the original bar-only notes keep working unchanged. Adding
+// a fifth shape is: one more branch here, one more draw function, one
+// more dispatch line in drawNotePanel — that dispatch is also what
+// exportNoteToPdf reuses, so a new shape gets PDF export for free.
+function chartTypeOf(c){
+  if(!c)return null;
+  if(c.type==="pie"&&Array.isArray(c.data)&&c.data.length)return "pie";
+  if(c.type==="combo"&&Array.isArray(c.bars)&&c.bars.some(b=>Array.isArray(b.data)&&b.data.length))return "combo";
+  if(c.type==="topology"&&Array.isArray(c.networks)&&c.networks.length)return "topology";
+  if(Array.isArray(c.data)&&c.data.length)return "bar";
+  return null;
+}
+function noteHasChart(n){
+  return !!(n&&chartTypeOf(n.chart));
+}
+function fmtAxisVal(v,unit){
+  const s=Math.round(v).toString();
+  return unit?s+unit:s;
+}
+function hslToRgbArr(h,s,l){
+  s/=100;l/=100;
+  const k=n=>(n+h/30)%12;
+  const a=s*Math.min(l,1-l);
+  const f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
+  return [Math.round(f(0)*255),Math.round(f(8)*255),Math.round(f(4)*255)];
+}
+// slice 0 lands near amber (28deg) so a one-slice pie doesn't clash with
+// the rest of the HUD; desaturated/dimmed to match the steel-and-amber
+// palette instead of reading as a stock chart-library rainbow.
+function pieColor(i,n){
+  return hslToRgbArr(Math.round((i*360/Math.max(1,n)+28)%360),52,56);
+}
+function drawChartBars(chart,x0,y0,panelW,rowH,pad,bodyPx){
+  const data=chart.data;
+  const maxVal=Math.max(1e-9,...data.map(d=>Math.abs(Number(d.value)||0)));
+  const areaX=x0+pad,areaW=panelW-pad*2;
+  ctx.font=`${Math.round(bodyPx*.92)}px 'SF Mono',Menlo,Consolas,monospace`;
+  // the value number gets its own fixed column on the right, same as the
+  // label on the left — otherwise the bar for the largest value fills its
+  // whole track and shoves its own number off the edge of the panel.
+  const valTexts=data.map(d=>chart.unit?`${d.value}${chart.unit}`:String(d.value));
+  const valueW=Math.max(...valTexts.map(t=>ctx.measureText(t).width))+pad*.6;
+  // sized to the actual label text, not a flat percentage — a flat column
+  // left "Jan" stranded against the bar with a dead gap of empty space
+  // where a longer label would have needed the room and this one didn't.
+  const lblTexts=data.map(d=>String(d.label??""));
+  const labelW=Math.min(areaW*.5,Math.max(...lblTexts.map(t=>ctx.measureText(t).width))+pad*.6);
+  const barX=areaX+labelW,barW=Math.max(10,areaW-labelW-valueW);
+  ctx.textBaseline="middle";
+  let by=y0;
+  data.forEach((d,i)=>{
+    const v=Number(d.value)||0;
+    const frac=Math.max(0,Math.min(1,Math.abs(v)/maxVal));
+    ctx.textAlign="right";
+    ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.9)`;
+    let lbl=String(d.label??"");
+    while(lbl.length>1&&ctx.measureText(lbl).width>labelW-pad*.5)lbl=lbl.slice(0,-1);
+    ctx.fillText(lbl,barX-pad*.5,by+rowH/2);
+    const trackH=Math.max(4,Math.round(rowH*.38));
+    const trackY=by+rowH/2-trackH/2;
+    ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.15)`;
+    ctx.fillRect(barX,trackY,barW,trackH);
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.85)`;
+    const fillW=Math.max(2,barW*frac);
+    ctx.fillRect(barX,trackY,fillW,trackH);
+    ctx.textAlign="left";
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.95)`;
+    ctx.fillText(valTexts[i],barX+barW+pad*.4,by+rowH/2);
+    by+=rowH;
+  });
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+}
+// Grouped bars (1-2 series, same scale) plus one line on its own right-hand
+// axis — for metrics that don't share a scale, like leads/intro sales
+// against net revenue. bars[].data and line.data must share the same
+// label order; nothing here re-sorts or re-aligns them.
+const COMBO_BAR_COLORS=[AMBER,CYAN];
+function drawChartCombo(chart,x0,y0,w,h,pad,bodyPx){
+  const bars=(chart.bars||[]).filter(b=>Array.isArray(b.data)&&b.data.length);
+  const line=(chart.line&&Array.isArray(chart.line.data)&&chart.line.data.length)?chart.line:null;
+  if(!bars.length&&!line)return;
+  const labels=(bars[0]?bars[0].data:line.data).map(d=>String(d.label??""));
+  const n=labels.length;
+  if(!n)return;
+
+  const fs=Math.round(bodyPx*.92);
+  ctx.font=`${fs}px 'SF Mono',Menlo,Consolas,monospace`;
+  ctx.textBaseline="middle";
+
+  // legend: swatch + name per bar series, then a line sample + name
+  let lx=x0;
+  const ly=y0+Math.round(fs*.9);
+  const swS=Math.round(fs*.55);
+  bars.forEach((b,i)=>{
+    const col=COMBO_BAR_COLORS[i%COMBO_BAR_COLORS.length];
+    ctx.fillStyle=`rgba(${col[0]},${col[1]},${col[2]},.9)`;
+    ctx.fillRect(lx,ly-swS/2,swS,swS);
+    lx+=swS+pad*.4;
+    ctx.textAlign="left";
+    ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.9)`;
+    const t=b.name||`Series ${i+1}`;
+    ctx.fillText(t,lx,ly);
+    lx+=ctx.measureText(t).width+pad*1.1;
+  });
+  if(line){
+    ctx.strokeStyle=`rgba(${WHITE[0]},${WHITE[1]},${WHITE[2]},.9)`;
+    ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(lx+swS*1.6,ly);ctx.stroke();
+    lx+=swS*1.6+pad*.4;
+    ctx.fillStyle=`rgba(${WHITE[0]},${WHITE[1]},${WHITE[2]},.9)`;
+    ctx.fillText(line.name||"Line",lx,ly);
+  }
+
+  // axis columns are measured, not guessed, same rule as the bar chart
+  const maxBar=bars.length?Math.max(1e-9,...bars.flatMap(b=>b.data.map(d=>Math.abs(Number(d.value)||0)))):0;
+  const maxLine=line?Math.max(1e-9,...line.data.map(d=>Math.abs(Number(d.value)||0))):0;
+  const barTopLabel=bars.length?fmtAxisVal(maxBar*1.08,bars[0].unit):"";
+  const lineTopLabel=line?fmtAxisVal(maxLine*1.12,line.unit):"";
+  const leftAxisW=bars.length?ctx.measureText(barTopLabel).width+pad*.5:0;
+  const rightAxisW=line?ctx.measureText(lineTopLabel).width+pad*.5:0;
+
+  const legendH=Math.round(fs*2.1);
+  const xAxisH=Math.round(fs*1.6);
+  const plotL=x0+leftAxisW;
+  const plotR=x0+w-rightAxisW;
+  const plotW=Math.max(20,plotR-plotL);
+  const plotT=y0+legendH;
+  const plotB=y0+h-xAxisH;
+  const plotH=Math.max(20,plotB-plotT);
+
+  ctx.strokeStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.18)`;
+  ctx.lineWidth=1;
+  [0,.5,1].forEach(f=>{
+    const gy=plotB-plotH*f;
+    ctx.beginPath();ctx.moveTo(plotL,gy);ctx.lineTo(plotR,gy);ctx.stroke();
+  });
+
+  if(bars.length){
+    ctx.textAlign="right";
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.75)`;
+    ctx.fillText(barTopLabel,plotL-pad*.3,plotT+fs*.5);
+    ctx.fillText("0",plotL-pad*.3,plotB-fs*.3);
+  }
+  if(line){
+    ctx.textAlign="left";
+    ctx.fillStyle=`rgba(${WHITE[0]},${WHITE[1]},${WHITE[2]},.75)`;
+    ctx.fillText(lineTopLabel,plotR+pad*.3,plotT+fs*.5);
+    ctx.fillText("0",plotR+pad*.3,plotB-fs*.3);
+  }
+
+  const groupW=plotW/n;
+  const barGap=groupW*.18;
+  const barCount=Math.max(1,bars.length);
+  const barW=Math.max(2,(groupW-barGap*(barCount+1))/barCount);
+  bars.forEach((b,bi)=>{
+    const col=COMBO_BAR_COLORS[bi%COMBO_BAR_COLORS.length];
+    ctx.fillStyle=`rgba(${col[0]},${col[1]},${col[2]},.85)`;
+    b.data.forEach((d,i)=>{
+      const v=Number(d.value)||0;
+      const bh=Math.max(0,(v/(maxBar*1.08))*plotH);
+      const bx=plotL+i*groupW+barGap*(bi+1)+barW*bi;
+      ctx.fillRect(bx,plotB-bh,barW,bh);
+    });
+  });
+
+  if(line){
+    ctx.strokeStyle=`rgba(${WHITE[0]},${WHITE[1]},${WHITE[2]},.9)`;
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    line.data.forEach((d,i)=>{
+      const px=plotL+i*groupW+groupW/2;
+      const py=plotB-((Number(d.value)||0)/(maxLine*1.12))*plotH;
+      i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+    });
+    ctx.stroke();
+    ctx.fillStyle=`rgba(${WHITE[0]},${WHITE[1]},${WHITE[2]},.95)`;
+    line.data.forEach((d,i)=>{
+      const px=plotL+i*groupW+groupW/2;
+      const py=plotB-((Number(d.value)||0)/(maxLine*1.12))*plotH;
+      ctx.beginPath();ctx.arc(px,py,Math.max(2,fs*.16),0,6.2832);ctx.fill();
+    });
+  }
+
+  ctx.textAlign="center";
+  ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.85)`;
+  labels.forEach((lbl,i)=>{
+    ctx.fillText(lbl,plotL+i*groupW+groupW/2,plotB+fs*1.15);
+  });
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+}
+// A slice per data point, procedurally hued so an arbitrary category count
+// (departments, sources, whatever) never runs out of distinct colors, plus
+// a legend list — a pie with no legend is just a mystery ring of color.
+function drawChartPie(chart,x0,y0,w,h,pad,bodyPx){
+  const data=(chart.data||[]).filter(d=>(Number(d.value)||0)>0);
+  const total=data.reduce((s,d)=>s+(Number(d.value)||0),0);
+  if(!data.length||total<=0)return;
+  const fs=Math.round(bodyPx*.92);
+  ctx.font=`${fs}px 'SF Mono',Menlo,Consolas,monospace`;
+  const unit=chart.unit||"";
+
+  const legendTexts=data.map(d=>`${d.label} ${Math.round((Number(d.value)||0)/total*100)}%`);
+  const legendW=Math.min(w*.55,Math.max(...legendTexts.map(t=>ctx.measureText(t).width))+fs*1.6);
+  const plotW=Math.max(20,w-legendW-pad);
+  const r=Math.max(10,Math.min(plotW,h)/2-pad*.5);
+  const cx=x0+plotW/2, cy=y0+h/2;
+
+  const colors=data.map((d,i)=>pieColor(i,data.length));
+  let start=-Math.PI/2;
+  data.forEach((d,i)=>{
+    const end=start+((Number(d.value)||0)/total)*6.2832;
+    ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,end);ctx.closePath();
+    const col=colors[i];
+    ctx.fillStyle=`rgba(${col[0]},${col[1]},${col[2]},.85)`;
+    ctx.fill();
+    ctx.strokeStyle="rgba(4,10,16,.9)";ctx.lineWidth=1.5;ctx.stroke();
+    start=end;
+  });
+
+  const lx=x0+plotW+pad;
+  const rowH=Math.max(fs*1.1,Math.min(Math.round(fs*1.9),h/data.length));
+  let ly=y0+Math.max(0,(h-rowH*data.length)/2)+rowH/2;
+  const swS=Math.round(fs*.6);
+  ctx.textBaseline="middle";
+  data.forEach((d,i)=>{
+    const col=colors[i];
+    ctx.fillStyle=`rgba(${col[0]},${col[1]},${col[2]},.9)`;
+    ctx.fillRect(lx,ly-swS/2,swS,swS);
+    ctx.textAlign="left";
+    ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.95)`;
+    const pct=Math.round((Number(d.value)||0)/total*100);
+    const valTxt=unit?` (${d.value}${unit})`:"";
+    let lbl=String(d.label??"");
+    const room=legendW-swS-pad*.6;
+    while(lbl.length>1&&ctx.measureText(`${lbl}  ${pct}%${valTxt}`).width>room)lbl=lbl.slice(0,-1);
+    ctx.fillText(`${lbl}  ${pct}%${valTxt}`,lx+swS+pad*.4,ly);
+    ly+=rowH;
+  });
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+}
+// Word-wraps on ctx's current font, respecting literal "\n" as a hard
+// break — shared by topology's free-space labels and the PDF export's
+// body text, so wrapping behavior only needs fixing in one place.
+function wrapLines(text,maxW){
+  const out=[];
+  for(const para of String(text).split("\n")){
+    if(!para){out.push("");continue;}
+    const words=para.split(" ");
+    let line="";
+    for(const w of words){
+      const t=line?line+" "+w:w;
+      if(ctx.measureText(t).width>maxW&&line){out.push(line);line=w;}
+      else line=t;
+    }
+    out.push(line);
+  }
+  return out;
+}
+function drawWrapped(text,x,y,maxW,lineH,maxLines){
+  const lines=wrapLines(text,maxW).slice(0,maxLines);
+  if(!lines.length)return 0;
+  const last=lines.length-1;
+  if(wrapLines(text,maxW).length>maxLines){
+    let t=lines[last];
+    while(t.length>1&&ctx.measureText(t+"…").width>maxW)t=t.slice(0,-1);
+    lines[last]=t+"…";
+  }
+  lines.forEach((l,i)=>ctx.fillText(l,x,y+i*lineH));
+  return lines.length;
+}
+// Nested boxes: one column per network, its subnets stacked inside it,
+// free space called out as a dashed strip at the bottom. Built for VNet/
+// subnet layouts but generic over anything hierarchical — a network is
+// just {name, cidr, note, subnets:[{name,cidr,note}], freeNote}.
+function drawChartTopology(chart,x0,y0,w,h,pad,bodyPx){
+  const nets=(chart.networks||[]).filter(n=>n&&n.name);
+  if(!nets.length)return;
+  const fs=Math.round(bodyPx*.88);
+  const uiFs=Math.round(fs*1.05);
+  const gap=pad*.8;
+  const colW=(w-gap*(nets.length-1))/nets.length;
+  // headH is computed ONCE, from whether ANY column has a region note, so
+  // every column's header is the same height — a per-column height would
+  // misalign the divider line and the subnet rows underneath it. Previous
+  // version budgeted a fixed fs*3.6 that didn't account for the top
+  // padding at all, so a header with all three lines (name, CIDR, note)
+  // ran past its own bottom edge and collided with the divider.
+  const topPad=Math.round(pad*.4);
+  const lineH1=Math.round(uiFs*1.35);
+  const lineH2=Math.round(fs*1.35);
+  const anyNote=nets.some(n=>n.note);
+  const headH=topPad*2+lineH1+lineH2*(anyNote?2:1);
+  nets.forEach((net,i)=>{
+    const bx=x0+i*(colW+gap);
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.08)`;
+    ctx.fillRect(bx,y0,colW,h);
+    ctx.strokeStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.7)`;
+    ctx.lineWidth=1.5;
+    ctx.strokeRect(bx,y0,colW,h);
+
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.18)`;
+    ctx.fillRect(bx,y0,colW,headH);
+    ctx.beginPath();ctx.moveTo(bx,y0+headH);ctx.lineTo(bx+colW,y0+headH);ctx.stroke();
+
+    ctx.textAlign="left";ctx.textBaseline="top";
+    ctx.font=`${uiFs}px ${UI_FONT}`;
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.95)`;
+    let nm=net.name;
+    while(nm.length>1&&ctx.measureText(nm).width>colW-pad)nm=nm.slice(0,-1);
+    ctx.fillText(nm,bx+pad*.5,y0+topPad);
+    ctx.font=`${fs}px 'SF Mono',Menlo,Consolas,monospace`;
+    ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.9)`;
+    ctx.fillText(net.cidr||"",bx+pad*.5,y0+topPad+lineH1);
+    if(net.note){
+      ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.65)`;
+      ctx.fillText(net.note,bx+pad*.5,y0+topPad+lineH1+lineH2);
+    }
+
+    const subs=net.subnets||[];
+    const bodyTop=y0+headH+pad*.4;
+    const bodyBottom=y0+h-pad*.4;
+    const freeH=net.freeNote?Math.round(fs*3):0;
+    const subAreaH=Math.max(10,bodyBottom-bodyTop-(freeH?freeH+pad*.4:0));
+    const rowGap=pad*.3;
+    const rowH=subs.length?Math.min(Math.round(fs*3.4),subAreaH/subs.length):0;
+    let sy=bodyTop;
+    subs.forEach(s=>{
+      const sh=Math.max(fs*1.4,rowH-rowGap);
+      ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.1)`;
+      ctx.fillRect(bx+pad*.5,sy,colW-pad,sh);
+      ctx.strokeStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.6)`;
+      ctx.lineWidth=1;
+      ctx.strokeRect(bx+pad*.5,sy,colW-pad,sh);
+      ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.95)`;
+      let name=String(s.name||"");
+      const room=colW-pad*1.6;
+      while(name.length>1&&ctx.measureText(name).width>room)name=name.slice(0,-1);
+      ctx.fillText(name,bx+pad*.8,sy+sh*.5-fs*1.15);
+      ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.85)`;
+      let detail=[s.cidr,s.note].filter(Boolean).join("  ");
+      while(detail.length>1&&ctx.measureText(detail).width>room)detail=detail.slice(0,-1);
+      ctx.fillText(detail,bx+pad*.8,sy+sh*.5+fs*.1);
+      sy+=rowH;
+    });
+
+    if(net.freeNote){
+      const fy=bodyBottom-freeH;
+      ctx.setLineDash([5,4]);
+      ctx.strokeStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.5)`;
+      ctx.strokeRect(bx+pad*.5,fy,colW-pad,freeH-pad*.2);
+      ctx.setLineDash([]);
+      ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.75)`;
+      ctx.font=`${Math.round(fs*.88)}px 'SF Mono',Menlo,Consolas,monospace`;
+      drawWrapped(`FREE: ${net.freeNote}`,bx+pad*.8,fy+pad*.22,colW-pad*1.6,fs*1.05,2);
+      ctx.font=`${fs}px 'SF Mono',Menlo,Consolas,monospace`;
+    }
+  });
+  ctx.textBaseline="alphabetic";ctx.textAlign="left";
+}
+function drawNotePanel(dt){
+  const noteHasContent=!!(AV.note&&(AV.note.text||noteHasChart(AV.note)));
+  const has=noteHasContent&&AV.note.text!==dismissedText;
+  notePresence+=((has?1:0)-notePresence)*Math.min(1,dt/300);
+  if(notePresence<.01){
+    noteCloseBox=null;notePdfBox=null;
+    noteTextEl.style.opacity=0;
+    noteTextEl.style.pointerEvents="none";
+    return;
+  }
+
+  if(fsPanel&&fsPanel!=="note"){
+    noteCloseBox=null;noteExpandBox=null;notePdfBox=null;noteBounds=null;
+    noteTextEl.style.opacity=0;noteTextEl.style.pointerEvents="none";
+    return;
+  }
+  const full=fsPanel==="note";
+  const mini=minPanel.note&&!full;
+  const pad=Math.round(Math.min(W,H)*.018);
+  const panelW=full?W-pad*2:RAIL.w;
+  const titleFs=Math.round(Math.min(W,H)*.024);
+  const bodyFs=Math.round(Math.min(W,H)*(full?.019:.017));
+  // the poster picks the style per note: "term" for commands/paths/data,
+  // where a fixed-width face is what makes it legible; "doc" for prose,
+  // where a normal document face reads better. Sticks through fade-out.
+  const style=has?(AV.note.style==="doc"?"doc":"term"):lastNoteStyle;
+  if(has)lastNoteStyle=style;
+  const fontFamily=style==="doc"?"'Calibri','Segoe UI',sans-serif":"'SF Mono',Menlo,Consolas,monospace";
+  const bodyPx=style==="doc"?Math.round(bodyFs*1.1):bodyFs;
+  const text=has?(AV.note.text||""):(lastNoteText||"");
+  if(has)lastNoteText=text;
+  const chart=has?(noteHasChart(AV.note)?AV.note.chart:null):lastNoteChart;
+  if(has)lastNoteChart=chart;
+  const chartType=chartTypeOf(chart);
+  const hasText=!!text;
+  const titleH=Math.round(titleFs*2);
+
+  // lay the real text out first so its natural (possibly scrollable) height
+  // drives the frame size, instead of a hand-rolled line-wrap/line-count.
+  // textContent is reassigned ONLY on change: doing it every frame destroys
+  // and recreates the text node, which silently kills any in-progress mouse
+  // selection before a drag can ever complete.
+  if(noteTextEl._lastText!==text){
+    noteTextEl.textContent=text;
+    noteTextEl._lastText=text;
+  }
+  noteTextEl.style.font=`${bodyPx}px ${fontFamily}`;
+  noteTextEl.style.lineHeight="1.4";
+  noteTextEl.style.width=`${(full?W-pad*2:RAIL.w)-pad*2}px`;
+  noteTextEl.style.height="auto";
+  noteTextEl.style.maxHeight="none";
+  // The frame is the rail, not the text. A short note leaves empty space
+  // rather than shrinking, so left and right stay the same size; a long one
+  // scrolls inside it. The DOM body already has overflow-y:auto.
+  const panelH=full?H-pad*2:(mini?titleH:RAIL.h);
+  const bodyH=Math.max(0,panelH-titleH-pad*1.3);
+  const x0=full?pad:RAIL.left;
+  const y0=full?pad:RAIL.top;
+  const slideIn=full?0:(1-notePresence)*-(panelW*.15);
+
+  // chart eats the top of the body; text (if any) gets whatever's left.
+  // Row height shrinks to fit before rows ever get clipped off. Combo and
+  // pie don't have a natural row count the way a flat bar list does, so
+  // they just take whatever the allotment gives them.
+  const chartRows=(chartType==="bar"&&!mini)?chart.data.length:0;
+  const idealRowH=Math.round(bodyPx*2.1);
+  const maxChartH=bodyH*(hasText?.55:.92);
+  let chartRowH=0,chartH=0;
+  if(chartType==="bar"){
+    chartRowH=chartRows?Math.max(Math.round(bodyPx*1.3),Math.min(idealRowH,maxChartH/chartRows)):0;
+    chartH=chartRows?chartRowH*chartRows:0;
+  }else if((chartType==="combo"||chartType==="pie"||chartType==="topology")&&!mini){
+    chartH=maxChartH;
+  }
+  const chartGap=(chartH&&hasText)?Math.round(pad*.9):0;
+  const textH=Math.max(0,bodyH-chartH-chartGap);
+
+  ctx.save();
+  ctx.globalAlpha=notePresence;
+  ctx.translate(slideIn,0);
+
+  panelPath(x0,y0,panelW,panelH,panelCut(panelW,panelH));
+  ctx.fillStyle="rgba(4,10,16,.86)";ctx.fill();
+  ctx.strokeStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.75)`;
+  ctx.lineWidth=1.5;ctx.stroke();
+  ctx.save();ctx.clip();   // nothing this panel draws escapes the frame
+
+  ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.16)`;
+  ctx.fillRect(x0,y0,panelW,titleH);
+  ctx.strokeStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.6)`;
+  ctx.beginPath();ctx.moveTo(x0,y0+titleH);ctx.lineTo(x0+panelW,y0+titleH);ctx.stroke();
+
+  // Controls are measured BEFORE the title is drawn, so the title can be cut
+  // to the room actually left. A long note title used to run straight over
+  // the close and expand controls and out past the panel edge.
+  ctx.textBaseline="middle";
+  const closeW=titleH*.9;
+  const exS=Math.round(titleH*.42);
+  const exW=exS+pad*.6;
+  const pdfW=exS+pad*.6;
+
+  let title=((has?AV.note.title:lastNoteTitle)||"NOTE").toUpperCase();
+  const titleRoom=panelW-pad*2-closeW-exW-pdfW-pad*.5;
+  ctx.font=`${titleFs}px ${UI_FONT}`;
+  if(ctx.measureText(title).width>titleRoom){
+    while(title.length>1&&ctx.measureText(title+"…").width>titleRoom)title=title.slice(0,-1);
+    title+="…";
+  }
+  ctx.textAlign="left";
+  ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.95)`;
+  ctx.fillText(title,x0+pad,y0+titleH/2);
+  if(has)lastNoteTitle=AV.note.title;
+
+  const miS=Math.round(titleH*.42);
+  minIcon(x0+panelW-closeW/2,y0+titleH/2,miS,mini,`${AMBER[0]},${AMBER[1]},${AMBER[2]},.85`);
+  noteCloseBox={x:x0+panelW-closeW+slideIn,y:y0,w:closeW,h:titleH};
+
+  const exCx=x0+panelW-closeW-pad*.5-exS/2;
+  expandIcon(exCx,y0+titleH/2,exS,full,`${AMBER[0]},${AMBER[1]},${AMBER[2]},.8`);
+  noteExpandBox={x:exCx-exS+slideIn,y:y0,w:exS*2,h:titleH};
+
+  // export: only worth drawing (and only clickable) once there's something
+  // to export — no point offering a PDF of an empty panel.
+  const notePdfEnabled=!!(chartType||hasText);
+  if(notePdfEnabled){
+    const pdfCx=exCx-exW*.5-pdfW*.5;
+    pdfIcon(pdfCx,y0+titleH/2,exS,`${AMBER[0]},${AMBER[1]},${AMBER[2]},.8`);
+    notePdfBox={x:pdfCx-exS+slideIn,y:y0,w:exS*2,h:titleH};
+  }else{
+    notePdfBox=null;
+  }
+  noteBounds={x:x0+slideIn,y:y0,w:panelW,h:panelH};
+
+  if(chartType==="bar"&&chartRows){
+    drawChartBars(chart,x0,y0+titleH+pad*.65,panelW,chartRowH,pad,bodyPx);
+  }else if(chartType==="combo"&&chartH>20){
+    drawChartCombo(chart,x0+pad,y0+titleH+pad*.65,panelW-pad*2,chartH,pad,bodyPx);
+  }else if(chartType==="pie"&&chartH>20){
+    drawChartPie(chart,x0+pad,y0+titleH+pad*.65,panelW-pad*2,chartH,pad,bodyPx);
+  }else if(chartType==="topology"&&chartH>20){
+    drawChartTopology(chart,x0+pad,y0+titleH+pad*.65,panelW-pad*2,chartH,pad,bodyPx);
+  }
+
+  ctx.restore();                       // end clip
+  ctx.textBaseline="alphabetic";ctx.textAlign="left";
+  ctx.restore();
+
+  noteTextEl.style.left=`${x0+pad+slideIn}px`;
+  noteTextEl.style.top=`${y0+titleH+pad*.65+chartH+chartGap}px`;
+  noteTextEl.style.height=`${textH}px`;
+  noteTextEl.style.maxHeight=`${textH}px`;
+  noteTextEl.style.color=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.95)`;
+  noteTextEl.style.opacity=(mini||!hasText)?0:notePresence;
+  noteTextEl.style.pointerEvents=(has&&!mini&&hasText)?"auto":"none";
+}
+let lastNoteText="",lastNoteTitle="",lastNoteStyle="term",lastNoteChart=null,dismissedText=null,
+    noteCloseBox=null,noteExpandBox=null,notePdfBox=null,noteBounds=null;
+
+// ---------------- PDF export: hand-built, no library ----------------
+// A minimal single-page PDF wrapping one JPEG image (DCTDecode) is a
+// well-known ~40-line construction — cheaper and more honest than vendoring
+// a PDF library (jsPDF etc.) for one button, and keeps this file dependency-
+// free like the rest of the codebase (see the activity hook's own "no
+// third-party imports" rule in the vault).
+async function canvasToPdfBlob(canvas){
+  const jpegBlob=await new Promise(res=>canvas.toBlob(res,"image/jpeg",.92));
+  const jpegBytes=new Uint8Array(await jpegBlob.arrayBuffer());
+  const W=canvas.width,H=canvas.height;
+  const enc=s=>new TextEncoder().encode(s);
+  const parts=[];
+  const offsets=[];
+  let pos=0;
+  const push=bytes=>{parts.push(bytes);pos+=bytes.length;};
+
+  push(enc("%PDF-1.4\n"));
+  offsets.push(pos);
+  push(enc("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"));
+  offsets.push(pos);
+  push(enc("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"));
+  offsets.push(pos);
+  push(enc(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] `
+    +`/Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>\nendobj\n`));
+  const content=`q ${W} 0 0 ${H} 0 0 cm /Im0 Do Q`;
+  offsets.push(pos);
+  push(enc(`4 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`));
+  offsets.push(pos);
+  push(enc(`5 0 obj\n<< /Type /XObject /Subtype /Image /Width ${W} /Height ${H} `
+    +`/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`));
+  push(jpegBytes);
+  push(enc("\nendstream\nendobj\n"));
+
+  const xrefStart=pos;
+  let xref="xref\n0 6\n0000000000 65535 f \n";
+  for(const off of offsets)xref+=String(off).padStart(10,"0")+" 00000 n \n";
+  push(enc(xref));
+  push(enc(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`));
+
+  return new Blob(parts,{type:"application/pdf"});
+}
+function downloadBlob(blob,filename){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download=filename;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
+// Renders the note panel's LAST KNOWN content (title/text/chart survive
+// fade-out the same way the live panel does) onto a fresh offscreen canvas
+// at export resolution, reusing the exact same drawChart* functions the
+// screen uses — so PDF export automatically supports every chart type the
+// panel does, including whatever gets added after this. Then wraps it as
+// a PDF and triggers a normal browser download, no server round-trip.
+let notePdfBusy=false;
+async function exportNoteToPdf(){
+  if(notePdfBusy)return;
+  const chart=lastNoteChart, type=chartTypeOf(chart);
+  const text=lastNoteText||"";
+  if(!type&&!text)return;
+  notePdfBusy=true;
+  const liveCtx=ctx;
+  try{
+    const EW=1600,EH=1000,pad=30;
+    const off=document.createElement("canvas");
+    off.width=EW;off.height=EH;
+    ctx=off.getContext("2d");
+
+    ctx.fillStyle="#01050a";ctx.fillRect(0,0,EW,EH);
+    const headH=Math.round(EW*.045);
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.16)`;
+    ctx.fillRect(0,0,EW,headH);
+    ctx.strokeStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.7)`;
+    ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,headH);ctx.lineTo(EW,headH);ctx.stroke();
+    ctx.textAlign="left";ctx.textBaseline="middle";
+    ctx.font=`${Math.round(headH*.42)}px ${UI_FONT}`;
+    ctx.fillStyle=`rgba(${AMBER[0]},${AMBER[1]},${AMBER[2]},.95)`;
+    ctx.fillText((lastNoteTitle||"NOTE").toUpperCase(),pad,headH/2);
+    ctx.textAlign="right";
+    ctx.font=`${Math.round(headH*.22)}px ${UI_FONT}`;
+    ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.85)`;
+    ctx.fillText(`${AV.name} // EXPORT`,EW-pad,headH/2);
+    ctx.textAlign="left";ctx.textBaseline="alphabetic";
+
+    const bodyPx=Math.round(EW*.0135);
+    const footH=Math.round(EW*.022);
+    const lineH=Math.round(bodyPx*1.4);
+    let textLines=[];
+    if(text){
+      ctx.font=`${bodyPx}px 'SF Mono',Menlo,Consolas,monospace`;
+      textLines=wrapLines(text,EW-pad*2);
+    }
+    const maxTextLines=textLines.length?Math.max(1,Math.min(textLines.length,Math.floor(EH*.22/lineH))):0;
+    const textH=maxTextLines?(maxTextLines*lineH+pad*.6):0;
+    const chartTop=headH+pad;
+    const chartBottom=EH-footH-textH-(textH?pad*.4:0);
+    const chartH=Math.max(50,chartBottom-chartTop);
+
+    if(type==="bar"){
+      const rows=chart.data.length;
+      const rowH=Math.max(Math.round(bodyPx*1.6),Math.min(Math.round(bodyPx*2.8),chartH/rows));
+      drawChartBars(chart,0,chartTop,EW,rowH,pad,bodyPx);
+    }else if(type==="combo"){
+      drawChartCombo(chart,pad,chartTop,EW-pad*2,chartH,pad,bodyPx);
+    }else if(type==="pie"){
+      drawChartPie(chart,pad,chartTop,EW-pad*2,chartH,pad,bodyPx);
+    }else if(type==="topology"){
+      drawChartTopology(chart,pad,chartTop,EW-pad*2,chartH,pad,bodyPx);
+    }
+
+    if(maxTextLines){
+      ctx.font=`${bodyPx}px 'SF Mono',Menlo,Consolas,monospace`;
+      ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.9)`;
+      drawWrapped(text,pad,chartBottom+pad*.6+bodyPx,EW-pad*2,lineH,maxTextLines);
+    }
+
+    ctx.textAlign="right";
+    ctx.font=`${Math.round(footH*.5)}px 'SF Mono',Menlo,Consolas,monospace`;
+    ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.6)`;
+    ctx.fillText(`Exported ${new Date().toLocaleString("en-GB")} — ${AV.name}`,EW-pad,EH-footH*.35);
+    ctx.textAlign="left";
+
+    const blob=await canvasToPdfBlob(off);
+    const stem=(lastNoteTitle||"jarvis-chart").toLowerCase()
+      .replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"")||"jarvis-chart";
+    downloadBlob(blob,`${stem}-${new Date().toISOString().slice(0,10)}.pdf`);
+  }finally{
+    ctx=liveCtx;
+    notePdfBusy=false;
+  }
+}
+
+function drawAlertFrame(t){
+  const pulse=.45+.55*Math.abs(Math.sin(t/250));
+  ctx.fillStyle=`rgba(${RED[0]},${RED[1]},${RED[2]},${.6*pulse})`;
+  ctx.fillRect(0,0,W,8);ctx.fillRect(0,H-8,W,8);
+  ctx.fillRect(0,0,8,H);ctx.fillRect(W-8,0,8,H);
+}
+
+/* ---------------- activity terminal: live "what is Jarvis doing" feed ----------------
+   AV.activity is kept by a PreToolUse hook (.claude/hooks/activity_log.py)
+   that fires on every tool call, so this reads as an actual scrolling
+   terminal — not a vibe — the whole time a turn is silently working. */
+const TERM_GREEN=[130,230,150];
+let termPresence=0,termScroll=0,termMinBox=null;
+let termBounds=null,termExpandBox=null;
+function drawTerminal(dt){
+  // once there's ANYTHING to show, the panel stays up — no auto-hide, so
+  // scrollback is always there to check rather than a widget that vanishes
+  // the moment the state changes
+  const has=AV.activity.length>0;
+  termPresence+=((has?1:0)-termPresence)*Math.min(1,dt/300);
+  if(termPresence<.01){termBounds=null;termExpandBox=null;return;}
+  if(fsPanel&&fsPanel!=="term"){termBounds=null;termExpandBox=null;return;}
+  const termFullscreen=fsPanel==="term";
+  const termMini=minPanel.term&&!termFullscreen;
+
+  const pad=Math.round(Math.min(W,H)*.014);
+  const lineFs=termFullscreen
+    ? Math.max(13,Math.round(Math.min(W,H)*.02))
+    : Math.max(12,Math.round(Math.min(W,H)*.016));
+  const titleH=Math.round(lineFs*2.2);
+  const lineH=lineFs*1.5;
+  let panelW,panelH,rows,x0,y0;
+  if(termFullscreen){
+    panelW=W-pad*2;
+    panelH=H-pad*2;
+    rows=Math.max(3,Math.floor((panelH-titleH-pad)/lineH));
+    x0=pad;y0=pad;
+  }else{
+    // mirror of the note panel: identical width, top and bottom
+    panelW=RAIL.w;
+    panelH=termMini?titleH:RAIL.h;
+    rows=termMini?0:Math.max(3,Math.floor((panelH-titleH-pad)/lineH));
+    x0=RAIL.right;
+    y0=RAIL.top;
+  }
+  const slideIn=termFullscreen?0:(1-termPresence)*(panelW*.15);
+
+  const total=AV.activity.length;
+  const maxScroll=Math.max(0,total-rows);
+  termScroll=Math.max(0,Math.min(termScroll,maxScroll));
+  const start=Math.max(0,total-rows-termScroll);
+  const entries=AV.activity.slice(start,start+rows);
+
+  ctx.save();
+  ctx.globalAlpha=termPresence;
+  ctx.translate(slideIn,0);
+
+  panelPath(x0,y0,panelW,panelH,panelCut(panelW,panelH));
+  ctx.fillStyle="rgba(3,8,6,.92)";ctx.fill();
+  ctx.strokeStyle=`rgba(${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.5)`;
+  ctx.lineWidth=1.5;ctx.stroke();
+  ctx.save();ctx.clip();   // nothing this panel draws escapes the frame
+
+  ctx.fillStyle=`rgba(${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.14)`;
+  ctx.fillRect(x0,y0,panelW,titleH);
+  ctx.beginPath();ctx.moveTo(x0,y0+titleH);ctx.lineTo(x0+panelW,y0+titleH);ctx.stroke();
+
+  ctx.textAlign="left";ctx.textBaseline="middle";
+  ctx.font=`${Math.round(lineFs*1.15)}px ${UI_FONT}`;
+  ctx.fillStyle=`rgba(${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.9)`;
+  ctx.fillText(termScroll>0?`ACTIVITY (${total-start-rows>0?total-start-rows:0} newer)`:"ACTIVITY",x0+pad,y0+titleH/2);
+
+  const exS=Math.round(titleH*.42);
+  const miCx=x0+panelW-pad-exS/2;
+  minIcon(miCx,y0+titleH/2,exS,termMini,`${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.85`);
+  termMinBox={x:miCx-exS+slideIn,y:y0,w:exS*2,h:titleH};
+  const exCx=miCx-exS*2-pad*.4;
+  expandIcon(exCx,y0+titleH/2,exS,termFullscreen,`${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.8`);
+  termExpandBox={x:exCx-exS+slideIn,y:y0,w:exS*2,h:titleH};
+
+  ctx.font=`${lineFs}px 'SF Mono',Menlo,Consolas,monospace`;
+  const maxChars=Math.floor((panelW-pad*2)/(lineFs*.62));
+  let ly=y0+titleH+pad*.6;
+  for(const e of entries){
+    const t=new Date((e.ts||0)*1000);
+    const hh=String(t.getHours()).padStart(2,"0"),
+          mm=String(t.getMinutes()).padStart(2,"0"),
+          ss=String(t.getSeconds()).padStart(2,"0");
+    let line=`${hh}:${mm}:${ss} ${e.tool||"?"} ${e.detail||""}`;
+    if(line.length>maxChars)line=line.slice(0,maxChars-1)+"…";
+    ctx.fillStyle=`rgba(${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.85)`;
+    ctx.fillText(line,x0+pad,ly+lineFs*.75);
+    ly+=lineH;
+  }
+  ctx.restore();                       // end clip
+  ctx.textBaseline="alphabetic";ctx.textAlign="left";
+  ctx.restore();
+  termBounds={x:x0+slideIn,y:y0,w:panelW,h:panelH};
+}
+
+/* ---------------- frame ---------------- */
+let now=0,thinkingAmt=0;
+
+/* ---------------- subtitles: the spoken conversation, in case you were not
+   listening. Fed by .voice_transcript, which backtalk writes one line at a
+   time. Laid out BEFORE the side panels each frame so the rail knows how
+   much room to leave, which is what keeps a panel off the captions.
+   Scrolls on the wheel and expands to fullscreen like the others. */
+let subsPresence=0,subsScroll=0,subsBounds=null,subsExpandBox=null,subsMinBox=null;
+const SUBS_FONT="'SF Mono',Menlo,Consolas,monospace";
+
+function subsLayout(){
+  const items=AV.transcript||[];
+  if(!items.length)return null;
+  const full=fsPanel==="subs";
+  const mini=minPanel.subs&&!full;
+  const m=Math.min(W,H);
+  const fs=Math.max(13,Math.round(m*(full?.024:.021)));
+  const lineH=Math.round(fs*1.45);
+  const pad=Math.round(m*.016);
+  const boxW=full?W-pad*2:Math.min(W*.62,1180);
+  // minimised keeps a labelled bar so the control that hid it is still there
+  const titleH=(full||mini)?Math.round(fs*2.2):0;
+  const maxLines=mini?0:(full?Math.max(3,Math.floor((H-pad*2-titleH-pad)/lineH)):5);
+
+  ctx.save();
+  ctx.font=`${fs}px ${SUBS_FONT}`;
+  const all=[];
+  for(const it of items){
+    const mine=String(it.role||"").toLowerCase()==="you";
+    const prefix=(mine?"YOU":String(it.role||AV.name).toUpperCase())+"  ";
+    let line=prefix;
+    for(const w of String(it.text||"").split(" ")){
+      const t=line?line+" "+w:w;
+      if(ctx.measureText(t).width>boxW-pad*2&&line!==prefix){all.push({text:line,mine});line="      "+w;}
+      else line=t;
+    }
+    if(line.trim())all.push({text:line,mine});
+  }
+  ctx.restore();
+  if(!all.length)return null;
+
+  const maxScroll=Math.max(0,all.length-maxLines);
+  subsScroll=Math.max(0,Math.min(subsScroll,maxScroll));
+  const startIdx=Math.max(0,all.length-maxLines-subsScroll);
+  const lines=all.slice(startIdx,startIdx+maxLines);
+  const boxH=mini?titleH:(titleH+lines.length*lineH+pad*1.4);
+  const x0=full?pad:Math.round(cx-boxW/2);
+  const y0=full?pad:Math.round(H-m*.085-boxH);
+  return {lines,total:all.length,maxScroll,fs,lineH,pad,boxW,boxH,x0,y0,titleH,full,mini};
+}
+
+function drawSubtitles(dt){
+  const L=subsCache;
+  const has=!!L;
+  subsPresence+=((has?1:0)-subsPresence)*Math.min(1,dt/300);
+  if(subsPresence<.01||!L){subsBounds=null;subsExpandBox=null;return;}
+  if(fsPanel&&fsPanel!=="subs"){subsBounds=null;subsExpandBox=null;return;}
+
+  const {lines,fs,lineH,pad,boxW,boxH,x0,y0,titleH,full,mini}=L;
+  ctx.save();
+  ctx.globalAlpha=subsPresence;
+  ctx.translate(0,(1-subsPresence)*(lineH*.6));
+
+  ctx.fillStyle="rgba(2,10,18,.80)";
+  panelPath(x0,y0,boxW,boxH,panelCut(boxW,boxH));
+  ctx.fill();
+  ctx.strokeStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.30)`;
+  ctx.lineWidth=1;ctx.stroke();
+  ctx.save();ctx.clip();   // nothing this panel draws escapes the frame
+
+  let ty=y0+pad;
+  if(titleH){
+    ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.12)`;
+    ctx.fillRect(x0,y0,boxW,titleH);
+    ctx.textAlign="left";ctx.textBaseline="middle";
+    ctx.font=`${Math.round(fs*.85)}px ${UI_FONT}`;
+    ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.9)`;
+    ctx.fillText(mini?`TRANSCRIPT (${L.total})`:"TRANSCRIPT",x0+pad,y0+titleH/2);
+    ty=y0+titleH+pad*.6;
+  }
+
+  // the expand control sits INSIDE the top-right corner. It previously used
+  // the word FULLSCREEN anchored at the box top, which drew half of itself
+  // above the frame and read as floating loose on the screen.
+  const exS=Math.round(fs*.95);
+  const cY=titleH?y0+titleH/2:y0+pad*.7+exS/2;
+  const miCx=x0+boxW-pad-exS/2;
+  minIcon(miCx,cY,exS,mini,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.75`);
+  subsMinBox={x:miCx-exS,y:cY-exS,w:exS*2,h:exS*2};
+  const exCx=miCx-exS*2-pad*.4;
+  expandIcon(exCx,cY,exS,full,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.7`);
+  subsExpandBox={x:exCx-exS,y:cY-exS,w:exS*2,h:exS*2};
+
+  ctx.font=`${fs}px ${SUBS_FONT}`;
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  lines.forEach((d,i)=>{
+    ctx.fillStyle=d.mine
+      ? `rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.92)`
+      : `rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.95)`;
+    ctx.fillText(d.text,x0+pad,ty+lineH*(i+1)-Math.round(fs*.35));
+  });
+  ctx.restore();                       // end clip
+  ctx.restore();
+  ctx.globalAlpha=1;ctx.textAlign="left";
+  subsBounds={x:x0,y:y0,w:boxW,h:boxH};
+}
+
+function frame(dt){
+  AV.tick(dt);
+  now+=dt;
+  const state=AV.state, alert=AV.alert;
+  // Listening owns the whole screen — that's the point of it (see the
+  // file header). A fullscreen note/terminal/subs panel left open from
+  // earlier draws on top of that every frame and silently buries it, so
+  // holding the PTT key never actually reclaims the screen back.
+  if(state==="listening"&&fsPanel)fsPanel=null;
+  const tgt=state==="thinking"?1:0;
+  thinkingAmt+=(tgt-thinkingAmt)*Math.min(1,dt/400);
+
+  ctx.fillStyle="#01050a";ctx.fillRect(0,0,W,H);
+  drawGrid(now);
+  const R=drawReactor(dt,state,AV.env,alert);
+  drawSpokes(R,AV.samples,AV.env,alert,state);
+  drawTitle();
+  if(state==="listening")drawListening();else listenHist.length=0;
+  if(thinkingAmt>.2)drawThinking(dt,thinkingAmt);else thinkLabel=null;
+  drawStateTag(dt,state,alert);
+  drawUsage();
+  // order matters: the captions are measured first so the rail knows what
+  // space to leave, then the panels fill the rail, then the captions draw
+  // on top of nothing at all.
+  subsCache=subsLayout();
+  computeRail();
+  drawNotePanel(dt);
+  drawTerminal(dt);
+  drawSubtitles(dt);
+  if(alert)drawAlertFrame(now);
+}
+
+function resize(){
+  W=cv.width=innerWidth;H=cv.height=innerHeight;cx=W/2;cy=H/2;
+}
+addEventListener("resize",resize);
+resize();
+
+addEventListener("keydown",e=>{
+  if(e.key==="f"||e.key==="F"){
+    document.fullscreenElement?document.exitFullscreen()
+      :document.documentElement.requestFullscreen();
+  }
+  if(e.key==="Escape"&&fsPanel)fsPanel=null;
+});
+
+// swaps to a pointer cursor over any clickable HUD control so it reads as such
+function inBox(b,x,y){
+  return b&&x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h;
+}
+function toggleFs(which){ fsPanel = fsPanel===which ? null : which; }
+
+addEventListener("mousemove",e=>{
+  const hit=inBox(noteCloseBox,e.clientX,e.clientY)
+          ||inBox(noteExpandBox,e.clientX,e.clientY)
+          ||inBox(notePdfBox,e.clientX,e.clientY)
+          ||inBox(termMinBox,e.clientX,e.clientY)
+          ||inBox(termExpandBox,e.clientX,e.clientY)
+          ||inBox(subsMinBox,e.clientX,e.clientY)
+          ||inBox(subsExpandBox,e.clientX,e.clientY);
+  cv.style.cursor=hit?"pointer":"default";
+});
+addEventListener("click",e=>{
+  // pdf export before expand: same reasoning as close-before-expand below —
+  // adjacent controls, and a download must never be swallowed by the panel
+  // going fullscreen instead.
+  if(inBox(notePdfBox,e.clientX,e.clientY)){exportNoteToPdf();return;}
+  // close before expand: the two controls sit next to each other and a
+  // dismiss must never be swallowed by the panel going fullscreen instead.
+  // minimise before expand: the controls sit next to each other and hiding a
+  // panel must never be swallowed by it going fullscreen instead.
+  if(inBox(noteCloseBox,e.clientX,e.clientY)){minPanel.note=!minPanel.note;if(fsPanel==="note")fsPanel=null;return;}
+  if(inBox(termMinBox,e.clientX,e.clientY)){minPanel.term=!minPanel.term;if(fsPanel==="term")fsPanel=null;return;}
+  if(inBox(subsMinBox,e.clientX,e.clientY)){minPanel.subs=!minPanel.subs;if(fsPanel==="subs")fsPanel=null;return;}
+  // expanding a minimised panel restores it, rather than expanding nothing
+  if(inBox(noteExpandBox,e.clientX,e.clientY)){minPanel.note=false;toggleFs("note");return;}
+  if(inBox(termExpandBox,e.clientX,e.clientY)){minPanel.term=false;toggleFs("term");return;}
+  if(inBox(subsExpandBox,e.clientX,e.clientY)){minPanel.subs=false;toggleFs("subs");return;}
+});
+addEventListener("wheel",e=>{
+  // whichever panel is under the pointer takes the scroll. The note body is
+  // a real DOM element with its own overflow, so it is deliberately absent
+  // here: the browser scrolls it and we must not fight that.
+  if(inBox(termBounds,e.clientX,e.clientY)){
+    e.preventDefault();termScroll-=Math.sign(e.deltaY)*2;return;
+  }
+  if(inBox(subsBounds,e.clientX,e.clientY)){
+    e.preventDefault();subsScroll-=Math.sign(e.deltaY)*2;return;
+  }
+},{passive:false});
+
+if(SHOT){
+  AV.shotRun(frame);
+}else{
+  let last=performance.now();
+  (function loop(ts){
+    const dt=Math.min(100,ts-last);last=ts;
+    frame(dt);
+    requestAnimationFrame(loop);
+  })(performance.now());
+}
+</script>
+</body>
+</html>
