@@ -370,7 +370,7 @@ const AV = (() => {
           body: file,
         });
         const j = await r.json();
-        toast(j.ok ? `saved ${j.file} — tell Jarvis to look` : "save failed", !!j.ok);
+        toast(j.ok ? `saved ${j.file} — tell ${A.name || "Jarvis"} to look` : "save failed", !!j.ok);
       } catch (err) { toast("no server — can't save the paste", false); }
     });
   }
