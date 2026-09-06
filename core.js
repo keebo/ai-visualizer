@@ -186,7 +186,13 @@ const AV = (() => {
   function tick(dt) {
     if (DEMO) demoUpdate(dt);
     const st = raw.state || "idle";
-    if (st !== A.state) stateSince = 0;
+    if (st !== A.state) {
+      stateSince = 0;
+      if (A._mic && !DEMO) {
+        if (st === "listening") micStart();
+        else if (A.state === "listening") micStop();
+      }
+    }
     A.state = st;
     stateSince += dt;
     A.stateElapsed = stateSince;
@@ -236,7 +242,14 @@ const AV = (() => {
     soundUpdate();
   }
 
-  /* --------------------------------- mic ---------------------------------- */
+  /* --------------------------------- mic ----------------------------------
+     Grabbed only while AV.state === "listening" (push-to-talk actually
+     held), not for the life of the page -- macOS ducks other apps' output
+     volume for as long as anything holds an open mic stream, and holding
+     it continuously was quietly lowering the voice line's own spoken
+     replies for the entire session (found 2026-09-06, reactor is the only
+     face that sets mic:true). Started/stopped from tick()'s state-change
+     edge below. */
   let micPeak = 0.02;
   function micRead() {
     const an = A._micAnalyser;
@@ -248,19 +261,42 @@ const AV = (() => {
     micPeak = Math.max(rms, 0.02, micPeak * 0.999);
     A.micLevel = Math.min(1, rms / micPeak);
   }
+  let kickWired = false;
+  function ensureKick() {
+    if (kickWired) return;
+    kickWired = true;
+    // resumes whichever mic AudioContext is current at the time, not the
+    // one live when this listener was first attached -- attached once,
+    // reused across every start/stop cycle instead of stacking a new pair
+    // of listeners on every PTT press
+    const kick = () => { const c = A._micCtx; if (c && c.state === "suspended") c.resume(); };
+    addEventListener("click", kick); addEventListener("keydown", kick);
+  }
+  let micStarting = false;
   async function micStart() {
+    if (micStarting || A._micStream) return;
+    micStarting = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (A.state !== "listening") { stream.getTracks().forEach(t => t.stop()); return; }
       const ctx = new AudioContext();
       const src = ctx.createMediaStreamSource(stream);
       const an = ctx.createAnalyser();
       an.fftSize = 512;
       src.connect(an);
+      A._micStream = stream;
+      A._micCtx = ctx;
       A._micAnalyser = an;
       A._micBuf = new Float32Array(an.fftSize);
-      const kick = () => ctx.state === "suspended" && ctx.resume();
-      addEventListener("click", kick); addEventListener("keydown", kick);
+      ensureKick();
     } catch (e) { /* no mic permission: level stays 0, faces degrade */ }
+    finally { micStarting = false; }
+  }
+  function micStop() {
+    try { A._micStream && A._micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    try { A._micCtx && A._micCtx.close(); } catch (e) {}
+    A._micStream = null; A._micCtx = null; A._micAnalyser = null; A._micBuf = null;
+    A.micLevel = 0;
   }
 
   /* ----------------------------- thinking sound ---------------------------- */
@@ -397,7 +433,6 @@ const AV = (() => {
   /* ---------------------------------- init --------------------------------- */
   A.init = (opts = {}) => {
     A._mic = !!opts.mic;
-    if (A._mic && !DEMO) micStart();
     if (opts.sound !== false) soundInit(); else A._sndWant = false;
     pasteInit();
     if (DEMO) {
