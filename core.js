@@ -298,6 +298,17 @@ const AV = (() => {
     A._micStream = null; A._micCtx = null; A._micAnalyser = null; A._micBuf = null;
     A.micLevel = 0;
   }
+  // Asks for mic permission once, up front on page load, then immediately
+  // releases the track -- so the OS/browser permission dialog (if this
+  // origin hasn't granted it yet) lands before any real conversation
+  // starts, instead of popping up mid-reply the first time PTT is pressed
+  // and micStart() fires for real.
+  async function micPrime() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+    } catch (e) { /* no permission: micStart() will also fail silently later */ }
+  }
 
   /* ----------------------------- thinking sound ---------------------------- */
   let audio = null, sndBtn = null, playing = false;
@@ -433,6 +444,7 @@ const AV = (() => {
   /* ---------------------------------- init --------------------------------- */
   A.init = (opts = {}) => {
     A._mic = !!opts.mic;
+    if (A._mic && !DEMO) micPrime();
     if (opts.sound !== false) soundInit(); else A._sndWant = false;
     pasteInit();
     if (DEMO) {
