@@ -425,7 +425,10 @@ const AV = (() => {
     const d = ep - Date.now() / 1000;
     if (!(d > 0)) return "";
     if (d < 3600) return Math.round(d / 60) + "m";
-    if (d < 86400) return Math.round(d / 3600) + "h";
+    if (d < 86400) {
+      const h = Math.floor(d / 3600), m = Math.round((d - h * 3600) / 60);
+      return m < 60 ? `${h}h ${m}m` : `${h + 1}h 0m`;
+    }
     return Math.round(d / 86400) + "d";
   };
 
@@ -447,9 +450,12 @@ const AV = (() => {
       const known = w.utilization != null;
       const pct = known ? Math.round(w.utilization * 100) : null;
       const rel = w.resets_at ? U.relTime(w.resets_at) : "";
+      // Same three-tier thresholds as the board face's usage readout:
+      // green under 51%, amber 51-80%, red at 81%+ (unknown reads as amber).
+      const level = !known ? "yellow" : pct >= 81 ? "red" : pct >= 51 ? "yellow" : "green";
       out.push({
-        label, pct, known,
-        hot: known && pct >= 80,
+        label, pct, known, level,
+        hot: level === "red",
         text: (known ? pct + "%" : "\u2014") + (rel ? "  " + rel : "")
       });
     }

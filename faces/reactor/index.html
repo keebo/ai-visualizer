@@ -62,7 +62,7 @@ const SHOT=Q.get("shot");
 AV.init({mic:true});
 AV.ready(a=>{document.title=a.name+" Arc Reactor";});
 
-const CYAN=[90,225,255], WHITE=[225,248,255], AMBER=[255,180,70], RED=[255,60,50];
+const CYAN=[90,225,255], WHITE=[225,248,255], AMBER=[255,180,70], RED=[255,60,50], GREEN=[61,220,132];
 const STEEL=[150,180,200];
 const UI_FONT="'Orbitron',sans-serif";
 const THINKING_WORDS=["PROCESSING","THINKING","QUERYING MEMORY","COMPILING RESPONSE","RUNNING IT DOWN"];
@@ -285,7 +285,8 @@ function drawUsage(){
   ctx.textAlign="right";ctx.textBaseline="alphabetic";
   let y=H-16-(rows.length-1)*(fs+4);
   for(const r of rows){
-    ctx.fillStyle=r.hot?`rgb(${RED[0]},${RED[1]},${RED[2]})`:`rgb(${CYAN[0]},${CYAN[1]},${CYAN[2]})`;
+    const c=r.level==="red"?RED:r.level==="yellow"?AMBER:GREEN;
+    ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`;
     ctx.fillText(`${r.label} ${r.text}`,W-18,y);
     y+=fs+4;
   }
