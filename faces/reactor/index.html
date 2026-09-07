@@ -552,22 +552,43 @@ function drawUsage(){
   }
   ctx.restore();
 }
-// System resource widgets (CPU/memory/disk/network) -- Kevin's ask,
-// 2026-09-06, styled to match drawUsage() exactly (same font, same
-// green/yellow/red convention), mirrored to the top-left since
-// drawUsage already owns bottom-right and volCtl owns top-right.
+// System resource widgets (CPU/memory/disk/network/GPU) -- back to a
+// plain top-left text list per Kevin's ask, 2026-09-06, replacing the
+// panel/graph build from earlier the same night (too much chrome for
+// what he wanted). The one interactive piece kept: clicking the CPU row
+// expands per-core percentages beneath it, markdown-section style,
+// rather than a permanent always-on graph for every metric.
+let cpuBox=null,sysCpuExpanded=false;
 function drawSysStats(){
   const rows=AV.util.sysRows();
-  if(!rows.length)return;
+  if(!rows.length){cpuBox=null;return;}
   const fs=Math.round(Math.min(W,H)*.02);
+  const coreFs=Math.round(fs*.78);
   ctx.save();
-  ctx.font=`${fs}px ${UI_FONT}`;
   ctx.textAlign="left";ctx.textBaseline="alphabetic";
   let y=fs+16;
   for(const r of rows){
+    ctx.font=`${fs}px ${UI_FONT}`;
     const c=r.level==="red"?RED:r.level==="yellow"?AMBER:GREEN;
     ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`;
-    ctx.fillText(`${r.label} ${r.text}`,18,y);
+    const label=`${r.label} ${r.text}`;
+    ctx.fillText(label,18,y);
+    if(r.label==="CPU"){
+      // generous but measured hit box, same spirit as the drawn-icon
+      // click targets elsewhere -- exact text width plus a little air,
+      // not a fixed guess that could drift out of sync with the font.
+      const tw=ctx.measureText(label).width;
+      cpuBox={x:10,y:y-fs,w:tw+16,h:fs+8};
+      if(sysCpuExpanded&&r.cores&&r.cores.length){
+        ctx.font=`${coreFs}px ${UI_FONT}`;
+        r.cores.forEach((pct,i)=>{
+          y+=coreFs+4;
+          const cc=pct>=80?RED:pct>=50?AMBER:GREEN;
+          ctx.fillStyle=`rgba(${cc[0]},${cc[1]},${cc[2]},.75)`;
+          ctx.fillText(`  core ${i}  ${Math.round(pct)}%`,18,y);
+        });
+      }
+    }
     y+=fs+4;
   }
   ctx.restore();
@@ -1472,8 +1493,8 @@ function frame(dt){
   if(thinkingAmt>.2)drawThinking(dt,thinkingAmt);else thinkLabel=null;
   drawStateTag(dt,state,alert);
   drawUsage();
-  drawSysStats();
   computeRail();
+  drawSysStats();
   drawNotePanel(dt);
   drawTerminal(dt);
   if(alert)drawAlertFrame(now);
@@ -1507,7 +1528,8 @@ addEventListener("mousemove",e=>{
           ||inBox(noteExpandBox,e.clientX,e.clientY)
           ||inBox(notePdfBox,e.clientX,e.clientY)
           ||inBox(termMinBox,e.clientX,e.clientY)
-          ||inBox(termExpandBox,e.clientX,e.clientY);
+          ||inBox(termExpandBox,e.clientX,e.clientY)
+          ||inBox(cpuBox,e.clientX,e.clientY);
   cv.style.cursor=hit?"pointer":"default";
 });
 addEventListener("click",e=>{
@@ -1524,6 +1546,7 @@ addEventListener("click",e=>{
   // expanding a minimised panel restores it, rather than expanding nothing
   if(inBox(noteExpandBox,e.clientX,e.clientY)){minPanel.note=false;toggleFs("note");return;}
   if(inBox(termExpandBox,e.clientX,e.clientY)){minPanel.term=false;toggleFs("term");return;}
+  if(inBox(cpuBox,e.clientX,e.clientY)){sysCpuExpanded=!sysCpuExpanded;return;}
 });
 addEventListener("wheel",e=>{
   // whichever panel is under the pointer takes the scroll. The note body is

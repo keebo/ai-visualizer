@@ -120,6 +120,7 @@ import time
 import webbrowser
 import urllib.request
 import errno
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -277,10 +278,40 @@ def _background_job_active():
 # standard macOS CLI tool (no new Python dependency), consistent with
 # this file's own "Python standard library only" design.
 SYS_SAMPLE_S = 3.0
+SYS_HISTORY_LEN = 120   # * SYS_SAMPLE_S = 6 minutes of trend, Kevin's ask
 _sys_lock = threading.Lock()
 _sys_stats = {"cpu_pct": None, "mem_pct": None, "disk_pct": None,
-              "disk_io_mbs": None, "net_kbs": None}
+              "disk_io_mbs": None, "net_kbs": None, "gpu_pct": None}
+_sys_history = {k: deque(maxlen=SYS_HISTORY_LEN) for k in _sys_stats}
 _sys_prev_net = None   # (bytes_total, monotonic_ts), for a manual rate calc
+_sys_cpu_cores = []    # per-core %, latest reading only -- no history needed
+                       # for an accordion that only ever shows "right now"
+
+_PM_CORE_RE = re.compile(r"^CPU (\d+) active residency:\s*([\d.]+)%", re.M)
+_PM_GPU_RE = re.compile(r"^GPU HW active residency:\s*([\d.]+)%", re.M)
+
+
+def _sys_cpu_gpu_powermetrics():
+    # Per-core CPU and GPU utilization both require `powermetrics` -- no
+    # other standard macOS tool exposes either (top only gives an
+    # aggregate). Runs passwordless via the sudoers rule scoped to exactly
+    # this one binary (/etc/sudoers.d/powermetrics-nopasswd, 2026-09-06).
+    # `-n` (never prompt) means a broken/missing grant fails silently to
+    # None instead of hanging this background thread on a password prompt
+    # nobody's watching. The 1-second sample window fits the existing 3s
+    # cadence the same way iostat's blocking -w 1 already does.
+    try:
+        out = subprocess.run(
+            ["sudo", "-n", "/usr/bin/powermetrics", "-n", "1", "-i", "1000",
+             "--samplers", "cpu_power,gpu_power"],
+            capture_output=True, text=True, timeout=4).stdout
+    except Exception:
+        return None, None
+    cores_by_idx = {int(i): float(v) for i, v in _PM_CORE_RE.findall(out)}
+    cores = [cores_by_idx[i] for i in sorted(cores_by_idx)] if cores_by_idx else None
+    m = _PM_GPU_RE.search(out)
+    gpu = round(float(m.group(1)), 1) if m else None
+    return cores, gpu
 
 
 def _sys_cpu_pct():
@@ -382,13 +413,14 @@ def _sys_net_total_bytes(iface: str):
 
 
 def _sys_sample_loop():
-    global _sys_prev_net
+    global _sys_prev_net, _sys_cpu_cores
     iface = _sys_default_iface()
     while True:
         cpu = _sys_cpu_pct()
         mem = _sys_mem_pct()
         disk_pct = _sys_disk_pct()
         disk_io = _sys_disk_io_mbs()
+        cpu_cores, gpu_pct = _sys_cpu_gpu_powermetrics()
         net_kbs = None
         total = _sys_net_total_bytes(iface)
         now = time.monotonic()
@@ -399,15 +431,29 @@ def _sys_sample_loop():
                 if elapsed > 0:
                     net_kbs = round((total - prev_bytes) / elapsed / 1024, 1)
             _sys_prev_net = (total, now)
+        sample = dict(cpu_pct=cpu, mem_pct=mem, disk_pct=disk_pct,
+                     disk_io_mbs=disk_io, net_kbs=net_kbs, gpu_pct=gpu_pct)
         with _sys_lock:
-            _sys_stats.update(cpu_pct=cpu, mem_pct=mem, disk_pct=disk_pct,
-                              disk_io_mbs=disk_io, net_kbs=net_kbs)
+            _sys_stats.update(sample)
+            if cpu_cores:
+                _sys_cpu_cores = cpu_cores
+            # None (a metric that failed or hasn't produced its first
+            # real sample yet) is skipped rather than plotted as 0 --
+            # a real 0% reads identically to "no data" otherwise, and
+            # a graph that dips to the floor every time one shell-out
+            # hiccups is worse than a short gap in the line.
+            for k, v in sample.items():
+                if v is not None:
+                    _sys_history[k].append(v)
         time.sleep(SYS_SAMPLE_S)
 
 
 def read_sys_stats() -> dict:
     with _sys_lock:
-        return dict(_sys_stats)
+        out = dict(_sys_stats)
+        out["history"] = {k: list(v) for k, v in _sys_history.items()}
+        out["cpu_cores"] = list(_sys_cpu_cores)
+        return out
 
 
 def read_bus():

@@ -57,12 +57,15 @@
                    push-to-talk; a face's chat box replaces all three
      AV.model      "fast" | "deep" | "fable" | "haiku" — which model tier the
                    voice line reports live, "" if it doesn't publish it
-     AV.system     {cpu_pct, mem_pct, disk_pct, disk_io_mbs, net_kbs} from
-                   server.py's own background sampler, any field null
-                   until its first real sample lands. No GPU: live
+     AV.system     {cpu_pct, mem_pct, disk_pct, disk_io_mbs, net_kbs,
+                   history: {<same keys>: [older...newer up to ~6min]}}
+                   from server.py's own background sampler, any field
+                   null until its first real sample lands. No GPU: live
                    utilization needs sudo (powermetrics), not available
                    from a background thread. AV.util.sysRows() below
-                   turns this into the same {label,level,text} shape
+                   turns this into the same {label,level,text} shape,
+                   plus {history,pctBased} for a face that wants to
+                   draw a trend line
                    usageRows() already provides for the token-usage rows.
      AV.setSilentMode(bool)  POSTs the new mode to /mode
      AV.sendTyped(text)  POSTs one typed line to /type, standing in for
@@ -586,19 +589,35 @@ const AV = (() => {
   // they're tiered on absolute throughput instead of a percentage.
   U.sysRows = () => {
     const s = A.system || {};
+    const hist = s.history || {};
     const out = [];
-    const pctRow = (label, pct, greenBelow, yellowBelow) => {
+    // pctBased rows (0-100% by definition) normalize a sparkline against
+    // a fixed 100; the rate-based rows (no fixed ceiling) normalize
+    // against their OWN history's peak instead -- computed by the face
+    // drawing the sparkline, not here, so this stays plain data.
+    // greenBelow/yellowBelow travel with the row (not just baked into
+    // `level`) so a face's expanded/fullscreen view can shade the actual
+    // threshold zones on the graph, not just color the current line.
+    const pctRow = (label, key, pct, greenBelow, yellowBelow, extra) => {
       if (pct == null) return;
       const level = pct >= yellowBelow ? "red" : pct >= greenBelow ? "yellow" : "green";
-      out.push({ label, level, text: Math.round(pct) + "%" });
+      out.push({ label, level, text: Math.round(pct) + "%",
+                history: hist[key] || [], pctBased: true,
+                greenBelow, yellowBelow, ...extra });
     };
-    pctRow("CPU", s.cpu_pct, 50, 80);
-    pctRow("MEM", s.mem_pct, 50, 80);
-    pctRow("DISK", s.disk_pct, 70, 90);
+    // cores travels on the CPU row (not a separate history series) --
+    // it's a per-core snapshot for the click-to-expand accordion, not a
+    // second trend line, so it doesn't need the deque history treatment.
+    pctRow("CPU", "cpu_pct", s.cpu_pct, 50, 80, { cores: s.cpu_cores || [] });
+    pctRow("MEM", "mem_pct", s.mem_pct, 50, 80);
+    pctRow("DISK", "disk_pct", s.disk_pct, 70, 90);
+    pctRow("GPU", "gpu_pct", s.gpu_pct, 50, 80);
     if (s.disk_io_mbs != null) {
       const v = s.disk_io_mbs;
       const level = v >= 50 ? "red" : v >= 10 ? "yellow" : "green";
-      out.push({ label: "DISK I/O", level, text: v.toFixed(1) + " MB/s" });
+      out.push({ label: "DISK I/O", level, text: v.toFixed(1) + " MB/s",
+                history: hist.disk_io_mbs || [], pctBased: false,
+                greenBelow: 10, yellowBelow: 50 });
     }
     if (s.net_kbs != null) {
       // Kevin's explicit ask: just two states for network, no middle
@@ -606,7 +625,9 @@ const AV = (() => {
       const level = s.net_kbs >= 200 ? "red" : "green";
       const text = s.net_kbs >= 1024
         ? (s.net_kbs / 1024).toFixed(1) + " MB/s" : Math.round(s.net_kbs) + " KB/s";
-      out.push({ label: "NET", level, text });
+      out.push({ label: "NET", level, text,
+                history: hist.net_kbs || [], pctBased: false,
+                greenBelow: 200, yellowBelow: null });
     }
     return out;
   };
