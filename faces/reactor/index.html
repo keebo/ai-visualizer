@@ -282,6 +282,25 @@ function syncSilentUI(){
   if(wantBar&&!barShown){chatBar.classList.add("show");}
   else if(!wantBar&&barShown){chatBar.classList.remove("show");}
 }
+// Independent of the canvas's own requestAnimationFrame loop, on purpose:
+// rAF gets suspended by the browser if this window isn't the focused one
+// at the moment it's evaluated (the exact bug that hit the transcript
+// panel earlier, fixed there by switching to setInterval) -- found live
+// 2026-09-06 when the mode toggle and model radios stayed on their
+// default blank state until Kevin clicked into the chat box, which
+// brought the window into focus and un-suspended the canvas loop these
+// two used to ride on. AV.tick() itself is cheap and safe to call twice
+// in the same instant (it just re-derives AV.* from the already-fetched
+// bus snapshot), so redundancy with the canvas loop's own tick() is
+// harmless.
+let modeSyncLastT=performance.now();
+setInterval(()=>{
+  const t=performance.now();
+  const dt=Math.min(500,t-modeSyncLastT);modeSyncLastT=t;
+  AV.tick(dt);
+  syncSilentUI();
+  syncModelUI();
+},250);
 
 const CYAN=[90,225,255], WHITE=[225,248,255], AMBER=[255,180,70], RED=[255,60,50], GREEN=[61,220,132];
 const STEEL=[150,180,200];
@@ -1401,8 +1420,6 @@ let now=0,thinkingAmt=0;
 function frame(dt){
   AV.tick(dt);
   now+=dt;
-  syncSilentUI();
-  syncModelUI();
   // Belt-and-suspenders on top of the mousemove check above: catches the
   // narrow instant a panel becomes fullscreen while the sliders already
   // happened to be visible, with no mousemove in between to react to it.
