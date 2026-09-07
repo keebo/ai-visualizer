@@ -53,13 +53,33 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     letter-spacing:.15em;cursor:pointer;text-align:center}
   #volCtl .modebtn:hover{background:rgba(90,225,255,.28)}
   #volCtl .modebtn.silent{border-color:rgba(255,180,70,.65);color:#ffce9e}
-  #chatRow{display:none;margin-top:6px}
-  #chatRow.show{display:block}
-  #chatInput{width:100%;background:rgba(2,10,18,.85);
-    border:1px solid rgba(90,225,255,.4);border-radius:3px;color:#d8e6ec;
-    font:12px 'SF Mono',Menlo,Consolas,monospace;letter-spacing:0;
-    padding:5px 7px;text-align:left}
-  #chatInput:focus{outline:none;border-color:#5ae1ff}
+  /* The composer itself lives at the bottom of the screen, not tucked
+     into the small volCtl cluster -- Kevin's ask, styled after the
+     Claude app's own chat box: a wide, rounded, generously padded bar
+     that grows with the message instead of a cramped single-line field. */
+  #chatBar{display:none;position:fixed;left:50%;bottom:28px;
+    transform:translateX(-50%);width:min(680px,88vw);z-index:46;
+    background:rgba(14,20,26,.92);border:1px solid rgba(90,225,255,.35);
+    border-radius:20px;padding:12px 14px;
+    box-shadow:0 8px 32px rgba(0,0,0,.5);
+    align-items:flex-end;gap:10px}
+  #chatBar.show{display:flex}
+  #chatInput{flex:1;resize:none;background:transparent;border:none;
+    color:#e8f3f7;font:15px/1.4 -apple-system,'SF Pro Text',sans-serif;
+    letter-spacing:0;max-height:180px;overflow-y:auto;padding:4px 2px}
+  #chatInput:focus{outline:none}
+  #chatInput::placeholder{color:#5a7078}
+  #chatSend{flex:none;width:34px;height:34px;border-radius:50%;
+    background:#5ae1ff;border:none;color:#01050a;font-size:16px;
+    line-height:1;cursor:pointer;display:flex;align-items:center;
+    justify-content:center}
+  #chatSend:hover{background:#8aeeff}
+  #chatSend:disabled{background:rgba(90,225,255,.25);cursor:default}
+  #chatPop{flex:none;width:34px;height:34px;border-radius:50%;
+    background:rgba(90,225,255,.12);border:1px solid rgba(90,225,255,.4);
+    color:#bfe9f5;font-size:14px;line-height:1;cursor:pointer;
+    display:flex;align-items:center;justify-content:center}
+  #chatPop:hover{background:rgba(90,225,255,.28)}
 </style>
 </head>
 <body>
@@ -76,8 +96,12 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     <input type="range" id="volVoice" min="0" max="1" step="0.01">
     <button class="stepbtn" data-target="volVoice" data-dir="1">+</button>
     <span class="val" id="volVoiceVal">--</span></div>
-  <button class="modebtn" id="modeBtn">VOICE MODE</button>
-  <div id="chatRow"><input type="text" id="chatInput" placeholder="Type your message…"></div>
+  <button class="modebtn" id="modeBtn">⏼ GO SILENT</button>
+</div>
+<div id="chatBar">
+  <textarea id="chatInput" rows="1" placeholder="Type your message…"></textarea>
+  <button id="chatPop" title="open chat in its own window">⧉</button>
+  <button id="chatSend" title="send">↑</button>
 </div>
 <script src="../../core.js"></script>
 <script>
@@ -143,60 +167,83 @@ for(const btn of document.querySelectorAll("#volCtl .stepbtn")){
   });
 }
 let volHideT=null;
-// Fullscreen-panel-overlap avoidance always wins, silent mode or not --
-// this is the exact click-collision bug fixed 2026-09-06 (see below),
-// and reintroducing it for silent mode would just move the bug rather
-// than fix it. volHide() (the idle-timeout path) respects silent mode;
-// forceVolHide() (the panel-overlap path) never does.
-function forceVolHide(){volBox.style.opacity="0";volBox.style.pointerEvents="none";}
-function volHide(){
-  if(AV.silentMode)return;   // silent mode's chat box stays up regardless
-  forceVolHide();
-}
+// The chat composer used to live inside this box and needed it pinned
+// visible through silent mode; it's a standalone bottom bar now, so
+// the plain hide-after-idle behavior applies again unconditionally.
+function volHide(){volBox.style.opacity="0";volBox.style.pointerEvents="none";}
 addEventListener("mousemove",()=>{
   // A fullscreen panel's own controls (note/terminal/transcript expand
   // and minimise) live in this same top-right corner -- found 2026-09-06
   // when a maximised transcript's minimise click landed on this box
   // instead, sitting on top of it. Never reveal over a fullscreen panel.
-  if(fsPanel){forceVolHide();return;}
+  if(fsPanel){volHide();return;}
   volBox.style.opacity=".7";volBox.style.pointerEvents="auto";
   clearTimeout(volHideT);
   volHideT=setTimeout(volHide,3000);
 });
 
-/* ---------------- silent mode: chat box replaces push-to-talk ---------------- */
+/* ---------------- silent mode: chat composer replaces push-to-talk ----------------
+   The composer is a Claude-app-style bar at the bottom of the screen
+   (Kevin's ask): wide, rounded, auto-growing textarea, Enter sends,
+   Shift+Enter makes a newline, plus a pop-out button that moves the
+   whole chat into its own window (chat.html) -- while that window's
+   open the on-face bar hides, same one-place-at-a-time rule as the
+   transcript pop-out. */
 const modeBtn=document.getElementById("modeBtn");
-const chatRow=document.getElementById("chatRow");
+const chatBar=document.getElementById("chatBar");
 const chatInput=document.getElementById("chatInput");
+const chatSend=document.getElementById("chatSend");
+const chatPop=document.getElementById("chatPop");
+let chatPopout=null;
 let lastSilentSeen=null;   // triggers the UI sync below only on a real change
 modeBtn.addEventListener("click",()=>AV.setSilentMode(!AV.silentMode));
-chatInput.addEventListener("keydown",(e)=>{
-  if(e.key!=="Enter")return;
+function chatGrow(){
+  chatInput.style.height="auto";
+  chatInput.style.height=Math.min(180,chatInput.scrollHeight)+"px";
+}
+chatInput.addEventListener("input",chatGrow);
+function chatSubmit(){
   const text=chatInput.value.trim();
   if(!text)return;
-  chatInput.disabled=true;
-  AV.sendTyped(text).then(()=>{chatInput.value="";})
+  chatInput.disabled=true;chatSend.disabled=true;
+  AV.sendTyped(text).then(()=>{chatInput.value="";chatGrow();})
     .catch(()=>{})
-    .finally(()=>{chatInput.disabled=false;chatInput.focus();});
+    .finally(()=>{chatInput.disabled=false;chatSend.disabled=false;chatInput.focus();});
+}
+chatSend.addEventListener("click",chatSubmit);
+chatInput.addEventListener("keydown",(e)=>{
+  // Enter sends, Shift+Enter inserts a newline -- the Claude app's own
+  // convention, which is the whole point of this composer.
+  if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();chatSubmit();}
 });
+chatPop.addEventListener("click",()=>{
+  if(chatPopout&&!chatPopout.closed){chatPopout.focus();return;}
+  chatPopout=window.open("chat.html","cipherChat",
+    "width=480,height=680,menubar=no,toolbar=no,location=no,status=no");
+});
+function chatBarShouldShow(){
+  return AV.silentMode&&!(chatPopout&&!chatPopout.closed);
+}
 function syncSilentUI(){
-  if(AV.silentMode===lastSilentSeen)return;
-  lastSilentSeen=AV.silentMode;
-  if(AV.silentMode){
-    modeBtn.textContent="SILENT MODE";
-    modeBtn.classList.add("silent");
-    chatRow.classList.add("show");
-    // The reveal-on-hover box needs to actually be visible for the chat
-    // box to be usable the instant the mode flips, not just un-hidden
-    // the next time the mouse happens to move.
-    volBox.style.opacity=".9";volBox.style.pointerEvents="auto";
-    clearTimeout(volHideT);
-    chatInput.focus();
-  }else{
-    modeBtn.textContent="VOICE MODE";
-    modeBtn.classList.remove("silent");
-    chatRow.classList.remove("show");
+  const wantBar=chatBarShouldShow();
+  const barShown=chatBar.classList.contains("show");
+  if(AV.silentMode!==lastSilentSeen){
+    lastSilentSeen=AV.silentMode;
+    if(AV.silentMode){
+      // The label names the ACTION a click performs, not the current
+      // state -- "SILENT MODE" while silent read as a status display,
+      // leaving no visible way back (Kevin's report, 2026-09-06).
+      modeBtn.textContent="⏻ RETURN TO VOICE";
+      modeBtn.classList.add("silent");
+    }else{
+      modeBtn.textContent="⏼ GO SILENT";
+      modeBtn.classList.remove("silent");
+    }
   }
+  // Checked every frame (not just on mode flips) so closing the pop-out
+  // brings the on-face bar back automatically, same as the transcript.
+  if(wantBar&&!barShown){chatBar.classList.add("show");chatInput.focus();}
+  else if(!wantBar&&barShown){chatBar.classList.remove("show");}
 }
 
 const CYAN=[90,225,255], WHITE=[225,248,255], AMBER=[255,180,70], RED=[255,60,50], GREEN=[61,220,132];
@@ -1445,7 +1492,7 @@ function frame(dt){
   // Belt-and-suspenders on top of the mousemove check above: catches the
   // narrow instant a panel becomes fullscreen while the sliders already
   // happened to be visible, with no mousemove in between to react to it.
-  if(fsPanel&&volBox.style.pointerEvents!=="none")forceVolHide();
+  if(fsPanel&&volBox.style.pointerEvents!=="none")volHide();
   const state=AV.state, alert=AV.alert;
   // Listening owns the whole screen — that's the point of it (see the
   // file header). A fullscreen note/terminal/subs panel left open from
