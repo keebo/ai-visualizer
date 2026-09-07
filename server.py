@@ -213,6 +213,7 @@ def mock_bus():
             "thinking_volume": _read_volume(".thinking_volume", 0.35),
             "voice_volume": _read_volume(".voice_volume", 1.0),
             "silent_mode": _read_silent_mode(),
+            "model": "fast",
             "source": MOCK_SOURCE, "note": {}, "activity": []}
 
 
@@ -341,7 +342,15 @@ def read_bus():
     # chat box (POST /type) replaces all three. See backtalk's
     # signals.is_silent_mode()/get_typed_input().
     silent_mode = _read_silent_mode()
-    return {"state": state, "level": level, "samples": samples,
+    # Which model tier backtalk reports live ("fast"|"deep"|"fable") --
+    # written at startup and on every console model switch, so a face's
+    # model selector shows real state. "" when backtalk predates this.
+    model = ""
+    try:
+        model = (BUS / ".voice_model").read_text().strip()
+    except OSError:
+        pass
+    return {"state": state, "level": level, "samples": samples, "model": model,
             "alert": alert, "loading": loading, "rate_limits": rate_limits,
             "source": source,
             "thinking_volume": thinking_volume, "voice_volume": voice_volume,

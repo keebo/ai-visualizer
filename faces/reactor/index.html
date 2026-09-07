@@ -53,6 +53,10 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     letter-spacing:.15em;cursor:pointer;text-align:center}
   #volCtl .modebtn:hover{background:rgba(90,225,255,.28)}
   #volCtl .modebtn.silent{border-color:rgba(255,180,70,.65);color:#ffce9e}
+  #modelRow{display:flex;align-items:center;justify-content:flex-end;
+    gap:8px;margin-top:6px}
+  #modelRow label{display:flex;align-items:center;gap:3px;cursor:pointer}
+  #modelRow input[type=radio]{accent-color:#5ae1ff;cursor:pointer;margin:0}
   /* The composer itself lives at the bottom of the screen, not tucked
      into the small volCtl cluster -- Kevin's ask, styled after the
      Claude app's own chat box: a wide, rounded, generously padded bar
@@ -96,6 +100,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     <input type="range" id="volVoice" min="0" max="1" step="0.01">
     <button class="stepbtn" data-target="volVoice" data-dir="1">+</button>
     <span class="val" id="volVoiceVal">--</span></div>
+  <div id="modelRow"><span>MODEL</span>
+    <label><input type="radio" name="model" value="fast">SONNET</label>
+    <label><input type="radio" name="model" value="deep">OPUS</label>
+    <label><input type="radio" name="model" value="fable">FABLE</label>
+  </div>
   <button class="modebtn" id="modeBtn">⏼ GO SILENT</button>
 </div>
 <div id="chatBar">
@@ -221,6 +230,29 @@ chatPop.addEventListener("click",()=>{
   chatPopout=window.open("chat.html","cipherChat",
     "width=480,height=680,menubar=no,toolbar=no,location=no,status=no");
 });
+/* Model radios: clicking sends the matching VOICE-CONSOLE PHRASE
+   through the same typed-input channel the chat box uses -- so the
+   switch itself needs zero new backtalk plumbing and behaves exactly
+   like saying/typing the phrase (announcement, interrupt semantics,
+   everything). The checked state syncs from AV.model edge-triggered
+   (only when the bus value CHANGES), so the user's optimistic click
+   isn't fought while backtalk is still processing the switch. */
+const MODEL_PHRASES={fast:"back to the fast model",
+                     deep:"switch to the deep model",
+                     fable:"switch to fable"};
+let lastModelSeen=null;
+for(const r of document.querySelectorAll('input[name="model"]')){
+  r.addEventListener("change",()=>{
+    if(r.checked&&MODEL_PHRASES[r.value])AV.sendTyped(MODEL_PHRASES[r.value]);
+  });
+}
+function syncModelUI(){
+  if(AV.model===lastModelSeen)return;
+  lastModelSeen=AV.model;
+  const r=document.querySelector(`input[name="model"][value="${AV.model}"]`);
+  if(r)r.checked=true;
+}
+
 function chatBarShouldShow(){
   // Both modes, from session start (Kevin's ask 2026-09-06, replacing
   // the old on-face transcript captions panel outright) -- typing in
@@ -1370,6 +1402,7 @@ function frame(dt){
   AV.tick(dt);
   now+=dt;
   syncSilentUI();
+  syncModelUI();
   // Belt-and-suspenders on top of the mousemove check above: catches the
   // narrow instant a panel becomes fullscreen while the sliders already
   // happened to be visible, with no mousemove in between to react to it.

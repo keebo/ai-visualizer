@@ -55,6 +55,8 @@
                    value to /volume for a face's own slider UI to call
      AV.silentMode  bool — true means no TTS, no thinking cue, no
                    push-to-talk; a face's chat box replaces all three
+     AV.model      "fast" | "deep" | "fable" — which model tier the
+                   voice line reports live, "" if it doesn't publish it
      AV.setSilentMode(bool)  POSTs the new mode to /mode
      AV.sendTyped(text)  POSTs one typed line to /type, standing in for
                    a spoken push-to-talk turn while silent. Returns the
@@ -225,6 +227,9 @@ const AV = (() => {
     // chat box (AV.sendTyped) replaces all three. See backtalk's
     // signals.is_silent_mode()/get_typed_input().
     A.silentMode = !!raw.silent_mode;
+    // "fast" | "deep" | "fable" per backtalk's console switches, "" when
+    // the running backtalk predates model publishing.
+    A.model = raw.model || "";
     A.note = (raw.note && (raw.note.text || noteChartPresent(raw.note.chart))) ? raw.note : null;
     A.activity = Array.isArray(raw.activity) ? raw.activity : [];
     A.transcript = Array.isArray(raw.transcript) ? raw.transcript : [];
