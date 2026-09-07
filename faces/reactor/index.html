@@ -30,12 +30,15 @@ SPDX-License-Identifier: AGPL-3.0-or-later
   #noteText{position:fixed;z-index:40;white-space:pre-wrap;word-wrap:break-word;
     overflow-y:auto;overflow-x:hidden;margin:0;user-select:text;cursor:text;
     opacity:0;pointer-events:none}
-  /* Backtalk's own thinking-cue and TTS-output volume -- neither is a
-     browser setting, so this is real DOM (not canvas) so native range
-     dragging works for free. Hidden until the mouse moves, same reveal
-     pattern as core.js's thinking-sound toggle. */
-  #volCtl{position:fixed;right:18px;top:18px;z-index:45;opacity:0;
-    transition:opacity .4s;pointer-events:none;
+  /* Backtalk's own thinking-cue/TTS-output volume, model picker, and the
+     voice/silent toggle -- neither the volume nor the mode is a browser
+     setting, so this is real DOM (not canvas) so native range dragging
+     works for free. Permanently visible (Kevin's ask, 2026-09-06) except
+     while a panel is fullscreen, where it still yields -- that's the
+     real click-collision bug fixed the same day, unrelated to whether
+     this box is normally hover-revealed or always-on. */
+  #volCtl{position:fixed;right:18px;top:18px;z-index:45;opacity:.85;
+    transition:opacity .3s;pointer-events:auto;
     font:11px 'SF Mono',Menlo,Consolas,monospace;letter-spacing:.15em;
     color:#bfe9f5;text-align:right}
   #volCtl .row{display:flex;align-items:center;justify-content:flex-end;
@@ -104,6 +107,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     <label><input type="radio" name="model" value="fast">SONNET</label>
     <label><input type="radio" name="model" value="deep">OPUS</label>
     <label><input type="radio" name="model" value="fable">FABLE</label>
+    <label><input type="radio" name="model" value="haiku">HAIKU</label>
   </div>
   <button class="modebtn" id="modeBtn">⏼ GO SILENT</button>
 </div>
@@ -175,21 +179,14 @@ for(const btn of document.querySelectorAll("#volCtl .stepbtn")){
     setVol(kind,parseFloat(el.value)+VOL_STEP*parseFloat(btn.dataset.dir));
   });
 }
-let volHideT=null;
-// The chat composer used to live inside this box and needed it pinned
-// visible through silent mode; it's a standalone bottom bar now, so
-// the plain hide-after-idle behavior applies again unconditionally.
+// Permanently visible now (Kevin's ask, 2026-09-06) except while a panel
+// is fullscreen -- its own controls (note/terminal expand and minimise)
+// live in this same top-right corner, the exact click-collision bug
+// fixed the same day. Synced from the independent setInterval below,
+// not the canvas's own rAF loop, for the same focus-suspension reason
+// the mode/model sync moved there.
 function volHide(){volBox.style.opacity="0";volBox.style.pointerEvents="none";}
-addEventListener("mousemove",()=>{
-  // A fullscreen panel's own controls (note/terminal/transcript expand
-  // and minimise) live in this same top-right corner -- found 2026-09-06
-  // when a maximised transcript's minimise click landed on this box
-  // instead, sitting on top of it. Never reveal over a fullscreen panel.
-  if(fsPanel){volHide();return;}
-  volBox.style.opacity=".7";volBox.style.pointerEvents="auto";
-  clearTimeout(volHideT);
-  volHideT=setTimeout(volHide,3000);
-});
+function volShow(){volBox.style.opacity=".85";volBox.style.pointerEvents="auto";}
 
 /* ---------------- silent mode: chat composer replaces push-to-talk ----------------
    The composer is a Claude-app-style bar at the bottom of the screen
@@ -239,7 +236,8 @@ chatPop.addEventListener("click",()=>{
    isn't fought while backtalk is still processing the switch. */
 const MODEL_PHRASES={fast:"back to the fast model",
                      deep:"switch to the deep model",
-                     fable:"switch to fable"};
+                     fable:"switch to fable",
+                     haiku:"switch to haiku"};
 let lastModelSeen=null;
 for(const r of document.querySelectorAll('input[name="model"]')){
   r.addEventListener("change",()=>{
@@ -300,6 +298,8 @@ setInterval(()=>{
   AV.tick(dt);
   syncSilentUI();
   syncModelUI();
+  if(fsPanel){if(volBox.style.pointerEvents!=="none")volHide();}
+  else if(volBox.style.pointerEvents!=="auto")volShow();
 },250);
 
 const CYAN=[90,225,255], WHITE=[225,248,255], AMBER=[255,180,70], RED=[255,60,50], GREEN=[61,220,132];
@@ -1420,9 +1420,10 @@ let now=0,thinkingAmt=0;
 function frame(dt){
   AV.tick(dt);
   now+=dt;
-  // Belt-and-suspenders on top of the mousemove check above: catches the
-  // narrow instant a panel becomes fullscreen while the sliders already
-  // happened to be visible, with no mousemove in between to react to it.
+  // Fast path for the fullscreen-panel-overlap guard: catches the
+  // transition with zero latency while this loop is healthy. The
+  // independent setInterval above is the fallback for the (rare) case
+  // this loop itself is suspended -- see its own comment.
   if(fsPanel&&volBox.style.pointerEvents!=="none")volHide();
   const state=AV.state, alert=AV.alert;
   // Listening owns the whole screen — that's the point of it (see the

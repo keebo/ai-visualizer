@@ -342,7 +342,7 @@ def read_bus():
     # chat box (POST /type) replaces all three. See backtalk's
     # signals.is_silent_mode()/get_typed_input().
     silent_mode = _read_silent_mode()
-    # Which model tier backtalk reports live ("fast"|"deep"|"fable") --
+    # Which model tier backtalk reports live ("fast"|"deep"|"fable"|"haiku") --
     # written at startup and on every console model switch, so a face's
     # model selector shows real state. "" when backtalk predates this.
     model = ""
