@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<!--
+ai-visualizer: give your AI agent a face.
+Copyright (C) 2026 Jared Rhodenizer
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Select Calendars</title>
+<style>
+  @font-face{font-family:"Orbitron";src:url("../../assets/Orbitron-Variable.ttf")}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;background:#01050a;overflow:hidden;
+    font-family:"Orbitron",sans-serif;color:#e8f3f7}
+  #hdr{padding:16px 20px 10px;font-size:14px;letter-spacing:.14em;
+    opacity:.85;border-bottom:1px solid rgba(90,225,255,.25)}
+  #list{padding:8px 10px;overflow-y:auto;height:calc(100% - 46px)}
+  #list::-webkit-scrollbar{width:7px}
+  #list::-webkit-scrollbar-thumb{background:rgba(90,225,255,.25);border-radius:4px}
+  .row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px;
+    font-size:13px;cursor:pointer}
+  .row:hover{background:rgba(90,225,255,.08)}
+  .row input{accent-color:#5ae1ff;cursor:pointer;flex:none}
+  .dot{width:10px;height:10px;border-radius:50%;flex:none}
+  .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #empty{padding:20px;opacity:.5;font-size:12px}
+</style>
+</head>
+<body>
+<div id="hdr">SELECT CALENDARS</div>
+<div id="list"><div id="empty">Loading…</div></div>
+<script src="../../core.js"></script>
+<script>
+"use strict";
+// sound:false -- this window only ever shows a checkbox list, same
+// reasoning as sys-detail.html/chat.html: never spawn its own thinking
+// cue.
+AV.init({sound:false});
+AV.ready(a => { document.title = "Select Calendars — " + (a.name || "Cipher"); });
+
+const listEl = document.getElementById("list");
+let built = false;
+
+// The picker is the source of truth once it has built its rows -- each
+// checkbox's own change handler POSTs the full new selection, so there
+// is no ongoing need to resync .checked from the poll loop afterward
+// (and doing so risks clobbering a click made before the round trip
+// back from /calendar_selection lands).
+function build(calendars, selected) {
+  listEl.innerHTML = "";
+  if (!calendars.length) {
+    listEl.innerHTML = '<div id="empty">No calendars found — is Spark Mail installed and synced?</div>';
+    return;
+  }
+  const selSet = new Set(selected);
+  for (const c of calendars) {
+    const row = document.createElement("label");
+    row.className = "row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = selSet.has(c.pk);
+    cb.dataset.pk = c.pk;
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = c.color || "#5ae1ff";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = c.name;
+    row.append(cb, dot, name);
+    row.addEventListener("change", () => {
+      const pks = [...listEl.querySelectorAll("input:checked")]
+        .map(el => parseInt(el.dataset.pk, 10));
+      AV.setCalendarSelection(pks);
+    });
+    listEl.appendChild(row);
+  }
+  built = true;
+}
+
+let lastT = performance.now();
+function render() {
+  const now = performance.now();
+  const dt = Math.min(2000, now - lastT); lastT = now;
+  // AV.calendar only updates inside AV.tick() (see core.js), not on its
+  // own poll timer alone -- same reason every other pop-out window here
+  // drives its own manual tick loop instead of the canvas rAF loop,
+  // which suspends entirely while this window is unfocused.
+  AV.tick(dt);
+  const cal = AV.calendar || {};
+  if (!built && Array.isArray(cal.calendars) && cal.calendars.length) {
+    build(cal.calendars, cal.selected || []);
+  }
+}
+render();
+setInterval(render, 500);
+</script>
+</body>
+</html>

@@ -114,6 +114,7 @@ import os
 import plistlib
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -122,6 +123,7 @@ import webbrowser
 import urllib.request
 import errno
 from collections import deque
+from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -278,8 +280,8 @@ def _background_job_active():
 # -- both far too slow for a poll hit ~8x/sec. Every command here is a
 # standard macOS CLI tool (no new Python dependency), consistent with
 # this file's own "Python standard library only" design.
-SYS_SAMPLE_S = 3.0
-SYS_HISTORY_LEN = 120   # * SYS_SAMPLE_S = 6 minutes of trend, Kevin's ask
+SYS_SAMPLE_S = 10.0
+SYS_HISTORY_LEN = 36   # * SYS_SAMPLE_S = 6 minutes of trend, Kevin's ask
 _sys_lock = threading.Lock()
 _sys_stats = {"cpu_pct": None, "mem_pct": None, "disk_pct": None,
               "disk_io_mbs": None, "net_kbs": None, "gpu_pct": None}
@@ -412,6 +414,130 @@ def _sys_disk_scan_loop():
         with _sys_disk_files_lock:
             _sys_disk_files = files
         time.sleep(SYS_DISK_SCAN_S)
+
+
+# Calendar widget, 2026-09-07 -- Spark Mail (Readdle's Electron mail client)
+# turns out to keep a real, live, WAL-mode SQLite cache of every calendar
+# it syncs (`calendarsapi.sqlite`), confirmed directly against Kevin's own
+# real data before building anything here. Read-only, WAL mode means we
+# never contend with Spark's own writer for a lock. Kevin's own choice: the
+# picker starts empty, nothing shown until he selects calendars himself.
+CAL_DB_PATH = Path.home() / "Library/Application Support/Spark Mail/core-data/calendarsapi.sqlite"
+CAL_POLL_S = 60.0
+CAL_MAX_EVENTS = 3
+_cal_lock = threading.Lock()
+_cal_calendars = []
+_cal_events = []
+_cal_month_days = []
+
+
+def _cal_read_selection():
+    try:
+        data = json.loads((BUS / ".calendar_selection").read_text(encoding="utf-8"))
+        return [int(x) for x in data] if isinstance(data, list) else []
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _cal_write_selection(pks):
+    (BUS / ".calendar_selection").write_text(
+        json.dumps(sorted(set(int(p) for p in pks))))
+
+
+def _cal_query(selected):
+    calendars, events, month_days = [], [], []
+    try:
+        conn = sqlite3.connect(f"file:{CAL_DB_PATH}?mode=ro", uri=True, timeout=2)
+        try:
+            rows = conn.execute(
+                "SELECT pk, displayname, backgroundColor FROM RDCALAPICollection "
+                "WHERE hidden=0 ORDER BY displayname COLLATE NOCASE").fetchall()
+            calendars = [{"pk": r[0], "name": r[1] or "(untitled)",
+                          "color": r[2] or "#5ae1ff"} for r in rows]
+            if selected:
+                placeholders = ",".join("?" * len(selected))
+                rows = conn.execute(
+                    "SELECT e.summary, e.dstart, e.allDay, c.displayname, "
+                    "c.backgroundColor FROM RDCALAPIEvent e "
+                    "JOIN RDCALAPICollection c ON c.pk = e.refCollectionPK "
+                    f"WHERE e.refCollectionPK IN ({placeholders}) "
+                    "AND e.dstart > strftime('%s','now') "
+                    f"ORDER BY e.dstart ASC LIMIT {CAL_MAX_EVENTS}",
+                    list(selected)).fetchall()
+                events = [{"summary": r[0] or "(untitled)", "start": r[1],
+                          "allDay": bool(r[2]), "calendar": r[3],
+                          "color": r[4] or "#5ae1ff"} for r in rows]
+                # Every day in the CURRENT LOCAL month that has at least one
+                # event, across the selected calendars -- feeds the month
+                # grid's highlight, not just the next-3 list. 'localtime'
+                # matches how the frontend already displays dstart (via a
+                # plain JS `new Date(start*1000)`, which is local-zone too).
+                rows = conn.execute(
+                    "SELECT DISTINCT CAST(strftime('%d', e.dstart, 'unixepoch', "
+                    "'localtime') AS INTEGER) FROM RDCALAPIEvent e "
+                    f"WHERE e.refCollectionPK IN ({placeholders}) "
+                    "AND strftime('%Y-%m', e.dstart, 'unixepoch', 'localtime') "
+                    "= strftime('%Y-%m', 'now', 'localtime')",
+                    list(selected)).fetchall()
+                month_days = sorted(r[0] for r in rows)
+        finally:
+            conn.close()
+    except Exception:
+        # Spark not installed, db missing, or a schema Spark's own next
+        # update changes underneath us -- degrade to an empty widget
+        # rather than take the whole face down over an optional feature.
+        pass
+    return calendars, events, month_days
+
+
+def _cal_poll_loop():
+    global _cal_calendars, _cal_events, _cal_month_days
+    while True:
+        calendars, events, month_days = _cal_query(_cal_read_selection())
+        with _cal_lock:
+            _cal_calendars = calendars
+            _cal_events = events
+            _cal_month_days = month_days
+        time.sleep(CAL_POLL_S)
+
+
+def read_cal_state():
+    with _cal_lock:
+        return {"calendars": list(_cal_calendars), "events": list(_cal_events),
+                "month_days": list(_cal_month_days),
+                "selected": _cal_read_selection()}
+
+
+def _cal_day_events(date_str):
+    # date_str: "YYYY-MM-DD", as produced by the reactor face's own month
+    # grid (built off the browser's local Date, same zone this machine's
+    # SQLite 'localtime' modifier resolves to). On-demand only -- clicking
+    # a day, not part of the 60s poll -- so no caching, straight to Spark's
+    # db each time.
+    selected = _cal_read_selection()
+    if not selected:
+        return []
+    events = []
+    try:
+        conn = sqlite3.connect(f"file:{CAL_DB_PATH}?mode=ro", uri=True, timeout=2)
+        try:
+            placeholders = ",".join("?" * len(selected))
+            rows = conn.execute(
+                "SELECT e.summary, e.dstart, e.dend, e.allDay, e.location, "
+                "c.displayname, c.backgroundColor FROM RDCALAPIEvent e "
+                "JOIN RDCALAPICollection c ON c.pk = e.refCollectionPK "
+                f"WHERE e.refCollectionPK IN ({placeholders}) "
+                "AND date(e.dstart, 'unixepoch', 'localtime') = ? "
+                "ORDER BY e.dstart ASC",
+                list(selected) + [date_str]).fetchall()
+            events = [{"summary": r[0] or "(untitled)", "start": r[1], "end": r[2],
+                      "allDay": bool(r[3]), "location": r[4] or "",
+                      "calendar": r[5], "color": r[6] or "#5ae1ff"} for r in rows]
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return events
 
 
 def _sys_cpu_pct():
@@ -659,7 +785,7 @@ def read_bus():
             "source": source,
             "thinking_volume": thinking_volume, "voice_volume": voice_volume,
             "silent_mode": silent_mode,
-            "system": read_sys_stats(),
+            "system": read_sys_stats(), "calendar": read_cal_state(),
             "note": note, "activity": activity, "transcript": transcript}
 
 
@@ -688,6 +814,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._mode()
             elif path == "/type":
                 self._type()
+            elif path == "/calendar_selection":
+                self._calendar_selection()
             else:
                 self._send(b"not found", "text/plain", 404)
         except ConnectionError:
@@ -789,6 +917,29 @@ class Handler(BaseHTTPRequestHandler):
         (BUS / ".typed_input").write_text(text)
         self._send(json.dumps({"ok": True}).encode(), "application/json")
 
+    def _calendar_selection(self):
+        # The picker pop-out POSTs the full checked set here on every
+        # change. Written to the same bus file the poll loop reads, plus
+        # an immediate re-query so the panel updates right away instead
+        # of waiting up to CAL_POLL_S for the next background tick.
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+            pks = [int(x) for x in body.get("pks", [])]
+        except (ValueError, TypeError):
+            self._send(json.dumps({"error": "bad body"}).encode(),
+                       "application/json", 400)
+            return
+        _cal_write_selection(pks)
+        calendars, events, month_days = _cal_query(pks)
+        global _cal_calendars, _cal_events, _cal_month_days
+        with _cal_lock:
+            _cal_calendars = calendars
+            _cal_events = events
+            _cal_month_days = month_days
+        self._send(json.dumps({"ok": True, "selected": pks}).encode(),
+                   "application/json")
+
     def do_GET(self):
         path = self.path.split("?")[0]
         try:
@@ -802,6 +953,13 @@ class Handler(BaseHTTPRequestHandler):
                        "local_name": CFG.get("local_name", ""),
                        "faces": list_faces()}
                 self._send(json.dumps(out).encode(), "application/json")
+            elif path == "/calendar_day":
+                date_str = (parse_qs(urlparse(self.path).query).get("date")
+                            or [""])[0]
+                events = _cal_day_events(date_str) if date_str else []
+                self._send(json.dumps({"date": date_str,
+                                       "events": events}).encode(),
+                           "application/json")
             else:
                 self._static(path)
         except ConnectionError:
@@ -878,6 +1036,7 @@ def open_visualizer(url):
 if __name__ == "__main__":
     threading.Thread(target=_sys_sample_loop, daemon=True).start()
     threading.Thread(target=_sys_disk_scan_loop, daemon=True).start()
+    threading.Thread(target=_cal_poll_loop, daemon=True).start()
     mode = f"MOCK={MOCK}" if MOCK else f"bus: {BUS}"
     root = f"http://127.0.0.1:{PORT}/"
     # The browser opens on the configured face; the gallery stays at "/" for switching.

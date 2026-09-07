@@ -5,5 +5,18 @@ __pycache__/
 .voice_waveform
 .voice_loading_pid
 .voice_alert
+.voice_model
+.voice_source
+.voice_transcript
+.voice_volume
+.voice_rate_limits
+.voice_reply_done
+.thinking_volume
+.silent_mode
+.typed_input
+.agent_activity
+.backtalk_session
+.calendar_selection
+streamdeck_debug.log
 # your personal config, created at setup: never tracked, never touched by updates
 ai-visualizer.json

@@ -579,10 +579,16 @@ function openSysDetail(metric){
                       `sysdetail_${metric}`,"width=560,height=440");
   if(w)w.focus();
 }
+// Bottom edge of the drawn SYSTEM block, in canvas Y -- the CPU row's
+// accordion grows this downward when expanded, and the Calendar panel
+// (2026-09-07, Kevin's ask) reads this to push itself down rather than
+// ever sit under the expanded core list, since both live on the screen's
+// left side.
+let sysStatsBottom=0;
 function drawSysStats(){
   const rows=AV.util.sysRows();
   sysIconBoxes=[];
-  if(!rows.length){cpuBox=null;return;}
+  if(!rows.length){cpuBox=null;sysStatsBottom=0;return;}
   const fs=Math.round(Math.min(W,H)*.02);
   const coreFs=Math.round(fs*.78);
   const iconS=Math.round(fs*.62);
@@ -618,6 +624,7 @@ function drawSysStats(){
     }
     y+=fs+4;
   }
+  sysStatsBottom=y;
   ctx.restore();
 }
 /* ---------------- note panel: whatever's driving the session can post text ----------------
@@ -704,11 +711,11 @@ function pdfIcon(x,y,s,alpha){
    composer. Only ONE panel may be fullscreen at a time and the others
    stand down completely while it is, which is what stops the panel
    underneath bleeding through the one on top. */
-let fsPanel=null;                 // null | "note" | "term"
+let fsPanel=null;                 // null | "note" | "cal"
 // Minimised, not closed: a panel collapses to its own title bar and stays
 // there, so nothing is ever thrown away and the control that hid it is the
 // control that brings it back.
-let minPanel={note:false,term:false};
+let minPanel={note:false,cal:false};
 let RAIL={w:0,top:0,bottom:0,h:0,left:0,right:0};
 function computeRail(){
   const m=Math.min(W,H);
@@ -1151,9 +1158,11 @@ function drawNotePanel(dt){
   // scrolls inside it. The DOM body already has overflow-y:auto.
   const panelH=full?H-pad*2:(mini?titleH:RAIL.h);
   const bodyH=Math.max(0,panelH-titleH-pad*1.3);
-  const x0=full?pad:RAIL.left;
+  // moved to the right rail slot 2026-09-07 (Kevin's ask) so Calendar
+  // could take the left slot vacated by the removed Activity panel.
+  const x0=full?pad:RAIL.right;
   const y0=full?pad:RAIL.top;
-  const slideIn=full?0:(1-notePresence)*-(panelW*.15);
+  const slideIn=full?0:(1-notePresence)*(panelW*.15);
 
   // chart eats the top of the body; text (if any) gets whatever's left.
   // Row height shrinks to fit before rows ever get clipped off. Combo and
@@ -1392,97 +1401,228 @@ function drawAlertFrame(t){
   ctx.fillRect(0,0,8,H);ctx.fillRect(W-8,0,8,H);
 }
 
-/* ---------------- activity terminal: live "what is Jarvis doing" feed ----------------
-   AV.activity is kept by a PreToolUse hook (.claude/hooks/activity_log.py)
-   that fires on every tool call, so this reads as an actual scrolling
-   terminal — not a vibe — the whole time a turn is silently working. */
-const TERM_GREEN=[130,230,150];
-let termPresence=0,termScroll=0,termMinBox=null;
-let termBounds=null,termExpandBox=null;
-function drawTerminal(dt){
-  // once there's ANYTHING to show, the panel stays up — no auto-hide, so
-  // scrollback is always there to check rather than a widget that vanishes
-  // the moment the state changes
-  const has=AV.activity.length>0;
-  termPresence+=((has?1:0)-termPresence)*Math.min(1,dt/300);
-  if(termPresence<.01){termBounds=null;termExpandBox=null;return;}
-  if(fsPanel&&fsPanel!=="term"){termBounds=null;termExpandBox=null;return;}
-  const termFullscreen=fsPanel==="term";
-  const termMini=minPanel.term&&!termFullscreen;
+/* ---------------- calendar panel: Spark Mail calendars + next 3 events ----------------
+   Replaced the old activity-terminal panel outright, 2026-09-07, Kevin's
+   ask — AV.calendar comes from server.py polling Spark Mail's own local
+   SQLite calendar cache. Picker (checkbox list of every calendar Spark
+   knows about) lives in a separate pop-out window, cal-picker.html,
+   since a compact rail panel has no room for ~45 checkboxes; this panel
+   just shows the result — the next 3 upcoming events across whichever
+   calendars are selected — same title-bar chrome (min/expand) as Note. */
+function pickerIcon(x,y,s,alpha){
+  // a small checkbox-with-check — the "configure selection" glyph,
+  // same stroke style as minIcon/expandIcon/chartIcon.
+  const h=s/2;
+  ctx.save();
+  ctx.strokeStyle=`rgba(${alpha})`;
+  ctx.lineWidth=Math.max(1.3,s*.14);
+  ctx.lineCap="round";ctx.lineJoin="round";
+  ctx.strokeRect(x-h,y-h,s,s);
+  ctx.beginPath();
+  ctx.moveTo(x-h*.5,y);ctx.lineTo(x-h*.1,y+h*.4);ctx.lineTo(x+h*.55,y-h*.45);
+  ctx.stroke();
+  ctx.restore();
+}
+function openCalPicker(){
+  const w=window.open("cal-picker.html","calpicker","width=420,height=560");
+  if(w)w.focus();
+}
+let calMinBox=null,calExpandBox=null,calPickerBox=null,calBounds=null;
+const MONTH_NAMES=["January","February","March","April","May","June","July",
+  "August","September","October","November","December"];
+// Current-month grid with event days highlighted — Kevin's ask,
+// 2026-09-07, on top of the existing next-3-events list rather than
+// replacing it. Draws at (x0,y0) within width w and returns the total
+// height it used, so the caller can lay the events list out below it.
+// Pure measurement, no drawing -- the single source of truth for the
+// grid's height, used both to lay it out for real (drawMonthGrid) and to
+// size the panel around it before anything is drawn (drawCalendarPanel).
+function monthGridHeight(fs){
+  const now=new Date();
+  const daysInMonth=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
+  const firstWeekday=new Date(now.getFullYear(),now.getMonth(),1).getDay();
+  const rows=Math.ceil((daysInMonth+firstWeekday)/7);
+  const headerH=Math.round(fs*1.5),wdH=Math.round(fs*1.3),cellH=Math.round(fs*1.55);
+  return headerH+wdH+cellH*rows;
+}
+let calDayBoxes=[];
+function drawMonthGrid(x0,y0,w,fs,monthDays){
+  const now=new Date();
+  const year=now.getFullYear(),month=now.getMonth(),today=now.getDate();
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const firstWeekday=new Date(year,month,1).getDay();
+  const cellW=w/7;
+  const headerH=Math.round(fs*1.5);
+  const wdH=Math.round(fs*1.3);
+  const cellH=Math.round(fs*1.55);
+  const daySet=new Set(monthDays||[]);
+  calDayBoxes=[];
+
+  ctx.textAlign="center";ctx.textBaseline="middle";
+  ctx.font=`${Math.round(fs*.95)}px ${UI_FONT}`;
+  ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.9)`;
+  ctx.fillText(`${MONTH_NAMES[month]} ${year}`,x0+w/2,y0+headerH/2);
+
+  const wd=["S","M","T","W","T","F","S"];
+  ctx.font=`${Math.round(fs*.65)}px ${UI_FONT}`;
+  ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.55)`;
+  for(let i=0;i<7;i++)ctx.fillText(wd[i],x0+cellW*i+cellW/2,y0+headerH+wdH/2);
+
+  let row=0,col=firstWeekday;
+  ctx.font=`${Math.round(fs*.78)}px ${UI_FONT}`;
+  for(let d=1;d<=daysInMonth;d++){
+    const cx=x0+cellW*col+cellW/2;
+    const cy=y0+headerH+wdH+cellH*row+cellH/2;
+    const r=Math.min(cellW,cellH)*.38;
+    if(daySet.has(d)){
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.32)`;ctx.fill();
+    }
+    if(d===today){
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.strokeStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.95)`;
+      ctx.lineWidth=1.4;ctx.stroke();
+    }
+    ctx.fillStyle=daySet.has(d)?"rgba(232,243,247,.95)":
+      `rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.7)`;
+    ctx.fillText(String(d),cx,cy);
+    // full cell, not just the drawn circle -- easier to hit than the
+    // dot/ring geometry alone, same "generous but measured" spirit as
+    // cpuBox's own hit target.
+    calDayBoxes.push({year,month,day:d,
+      x:x0+cellW*col,y:y0+headerH+wdH+cellH*row,w:cellW,h:cellH});
+    col++;
+    if(col>6){col=0;row++;}
+  }
+  return headerH+wdH+cellH*(row+1);
+}
+function fmtEventTime(ts,allDay){
+  const t=new Date(ts*1000);
+  const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const datePart=`${months[t.getMonth()]} ${t.getDate()}`;
+  if(allDay)return datePart;
+  let h=t.getHours();const ampm=h>=12?"PM":"AM";h=h%12;if(h===0)h=12;
+  const mm=String(t.getMinutes()).padStart(2,"0");
+  return `${datePart}, ${h}:${mm} ${ampm}`;
+}
+function drawCalendarPanel(dt){
+  // permanent HUD fixture, unlike Note/the old Activity feed — always
+  // shown, even with nothing selected, so the picker affordance is
+  // always reachable rather than the panel vanishing on empty content.
+  if(fsPanel&&fsPanel!=="cal"){calBounds=null;calExpandBox=null;calPickerBox=null;calDayBoxes=[];return;}
+  const calFullscreen=fsPanel==="cal";
+  const calMini=minPanel.cal&&!calFullscreen;
+  if(calMini)calDayBoxes=[];   // grid isn't drawn while minimised -- no stale hit boxes
 
   const pad=Math.round(Math.min(W,H)*.014);
-  const lineFs=termFullscreen
+  const lineFs=calFullscreen
     ? Math.max(13,Math.round(Math.min(W,H)*.02))
     : Math.max(12,Math.round(Math.min(W,H)*.016));
   const titleH=Math.round(lineFs*2.2);
-  const lineH=lineFs*1.5;
-  let panelW,panelH,rows,x0,y0;
-  if(termFullscreen){
-    panelW=W-pad*2;
-    panelH=H-pad*2;
-    rows=Math.max(3,Math.floor((panelH-titleH-pad)/lineH));
-    x0=pad;y0=pad;
+  const lineH=lineFs*1.7;
+  const cal=AV.calendar||{};
+  const selected=cal.selected||[];
+  const events=cal.events||[];
+  // Sized to its own content, not a fixed rail slot -- Kevin's ask,
+  // 2026-09-07: the grid is a fixed height per month, but the events
+  // section varies (empty state vs. up to 3 rows), so the panel itself
+  // should only ever be as tall as what it's actually showing.
+  const gridH=monthGridHeight(lineFs);
+  const eventsH=!selected.length ? lineH+Math.round(lineFs*1.1)
+    : !events.length ? lineH
+    : events.length*lineH*2.1;
+  const contentH=titleH+pad*.8+gridH+pad*.9+eventsH+pad;
+  let panelW,panelH,x0,y0;
+  if(calFullscreen){
+    panelW=W-pad*2;panelH=H-pad*2;x0=pad;y0=pad;
   }else{
-    // mirror of the note panel: identical width, top and bottom
     panelW=RAIL.w;
-    panelH=termMini?titleH:RAIL.h;
-    rows=termMini?0:Math.max(3,Math.floor((panelH-titleH-pad)/lineH));
-    x0=RAIL.right;
-    y0=RAIL.top;
+    panelH=calMini?titleH:Math.min(RAIL.h,contentH);
+    x0=RAIL.left;
+    // Never sit under the SYSTEM block's expanded CPU-core accordion --
+    // both live on the screen's left side, and the accordion's own
+    // height changes at click time, not just on resize.
+    y0=calMini?RAIL.top:Math.max(RAIL.top,sysStatsBottom+pad*1.4);
   }
-  const slideIn=termFullscreen?0:(1-termPresence)*(panelW*.15);
-
-  const total=AV.activity.length;
-  const maxScroll=Math.max(0,total-rows);
-  termScroll=Math.max(0,Math.min(termScroll,maxScroll));
-  const start=Math.max(0,total-rows-termScroll);
-  const entries=AV.activity.slice(start,start+rows);
 
   ctx.save();
-  ctx.globalAlpha=termPresence;
-  ctx.translate(slideIn,0);
-
   panelPath(x0,y0,panelW,panelH,panelCut(panelW,panelH));
-  ctx.fillStyle="rgba(3,8,6,.92)";ctx.fill();
-  ctx.strokeStyle=`rgba(${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.5)`;
+  ctx.fillStyle="rgba(3,10,14,.92)";ctx.fill();
+  ctx.strokeStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.5)`;
   ctx.lineWidth=1.5;ctx.stroke();
   ctx.save();ctx.clip();   // nothing this panel draws escapes the frame
 
-  ctx.fillStyle=`rgba(${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.14)`;
+  ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.14)`;
   ctx.fillRect(x0,y0,panelW,titleH);
   ctx.beginPath();ctx.moveTo(x0,y0+titleH);ctx.lineTo(x0+panelW,y0+titleH);ctx.stroke();
 
   ctx.textAlign="left";ctx.textBaseline="middle";
   ctx.font=`${Math.round(lineFs*1.15)}px ${UI_FONT}`;
-  ctx.fillStyle=`rgba(${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.9)`;
-  ctx.fillText(termScroll>0?`ACTIVITY (${total-start-rows>0?total-start-rows:0} newer)`:"ACTIVITY",x0+pad,y0+titleH/2);
+  ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.9)`;
+  ctx.fillText("CALENDAR",x0+pad,y0+titleH/2);
 
   const exS=Math.round(titleH*.42);
   const miCx=x0+panelW-pad-exS/2;
-  minIcon(miCx,y0+titleH/2,exS,termMini,`${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.85`);
-  termMinBox={x:miCx-exS+slideIn,y:y0,w:exS*2,h:titleH};
+  minIcon(miCx,y0+titleH/2,exS,calMini,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.85`);
+  calMinBox={x:miCx-exS,y:y0,w:exS*2,h:titleH};
   const exCx=miCx-exS*2-pad*.4;
-  expandIcon(exCx,y0+titleH/2,exS,termFullscreen,`${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.8`);
-  termExpandBox={x:exCx-exS+slideIn,y:y0,w:exS*2,h:titleH};
+  expandIcon(exCx,y0+titleH/2,exS,calFullscreen,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.8`);
+  calExpandBox={x:exCx-exS,y:y0,w:exS*2,h:titleH};
+  const pickCx=exCx-exS*2-pad*.4;
+  pickerIcon(pickCx,y0+titleH/2,exS,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.8`);
+  calPickerBox={x:pickCx-exS,y:y0,w:exS*2,h:titleH};
 
-  ctx.font=`${lineFs}px 'SF Mono',Menlo,Consolas,monospace`;
-  const maxChars=Math.floor((panelW-pad*2)/(lineFs*.62));
-  let ly=y0+titleH+pad*.6;
-  for(const e of entries){
-    const t=new Date((e.ts||0)*1000);
-    const hh=String(t.getHours()).padStart(2,"0"),
-          mm=String(t.getMinutes()).padStart(2,"0"),
-          ss=String(t.getSeconds()).padStart(2,"0");
-    let line=`${hh}:${mm}:${ss} ${e.tool||"?"} ${e.detail||""}`;
-    if(line.length>maxChars)line=line.slice(0,maxChars-1)+"…";
-    ctx.fillStyle=`rgba(${TERM_GREEN[0]},${TERM_GREEN[1]},${TERM_GREEN[2]},.85)`;
-    ctx.fillText(line,x0+pad,ly+lineFs*.75);
-    ly+=lineH;
+  if(!calMini){
+    let ly=y0+titleH+pad*.8;
+    drawMonthGrid(x0+pad,ly,panelW-pad*2,lineFs,cal.month_days);
+    // drawMonthGrid leaves textAlign/"center" current -- reset before any
+    // of the left-aligned text below, or it silently centers on x0+pad
+    // instead of starting there (the real cause of the misalignment).
+    ctx.textAlign="left";ctx.textBaseline="middle";
+    ly+=gridH+pad*.9;
+    ctx.beginPath();ctx.moveTo(x0+pad,ly-pad*.45);ctx.lineTo(x0+panelW-pad,ly-pad*.45);
+    ctx.strokeStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.2)`;ctx.lineWidth=1;ctx.stroke();
+    ctx.font=`${lineFs}px ${UI_FONT}`;
+    if(!selected.length){
+      ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.7)`;
+      ctx.fillText("No calendars selected",x0+pad,ly+lineFs*.7);
+      ly+=lineH;
+      ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.5)`;
+      ctx.font=`${Math.round(lineFs*.9)}px ${UI_FONT}`;
+      ctx.fillText("Click the checkbox icon above to choose",x0+pad,ly+lineFs*.6);
+    }else if(!events.length){
+      ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.7)`;
+      ctx.fillText("No upcoming events",x0+pad,ly+lineFs*.7);
+    }else{
+      const dotR=Math.max(3,lineFs*.22);
+      const textX=x0+pad+dotR*2+pad*.4;
+      const maxW=panelW-pad*2-dotR*2-pad*.4;
+      for(const ev of events){
+        ctx.beginPath();ctx.arc(x0+pad+dotR,ly+lineH*.42,dotR,0,Math.PI*2);
+        ctx.fillStyle=ev.color||`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},1)`;
+        ctx.fill();
+
+        ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.65)`;
+        ctx.font=`${Math.round(lineFs*.85)}px ${UI_FONT}`;
+        ctx.fillText(fmtEventTime(ev.start,ev.allDay),textX,ly+lineFs*.55);
+
+        let summary=ev.summary||"(untitled)";
+        ctx.font=`${lineFs}px ${UI_FONT}`;
+        ctx.fillStyle="rgba(232,243,247,.95)";
+        if(ctx.measureText(summary).width>maxW){
+          while(summary.length>1&&ctx.measureText(summary+"…").width>maxW)
+            summary=summary.slice(0,-1);
+          summary+="…";
+        }
+        ctx.fillText(summary,textX,ly+lineFs*1.6);
+        ly+=lineH*2.1;
+      }
+    }
   }
   ctx.restore();                       // end clip
   ctx.textBaseline="alphabetic";ctx.textAlign="left";
   ctx.restore();
-  termBounds={x:x0+slideIn,y:y0,w:panelW,h:panelH};
+  calBounds={x:x0,y:y0,w:panelW,h:panelH};
 }
 
 /* ---------------- frame ---------------- */
@@ -1523,7 +1663,7 @@ function frame(dt){
   computeRail();
   drawSysStats();
   drawNotePanel(dt);
-  drawTerminal(dt);
+  drawCalendarPanel(dt);
   if(alert)drawAlertFrame(now);
 }
 
@@ -1550,15 +1690,27 @@ function inBox(b,x,y){
 }
 function toggleFs(which){ fsPanel = fsPanel===which ? null : which; }
 function hitIconBox(x,y){ return sysIconBoxes.find(b=>inBox(b,x,y)); }
+function hitDayBox(x,y){ return calDayBoxes.find(b=>inBox(b,x,y)); }
+function openCalDay(year,month,day){
+  // "YYYY-MM-DD", matching the format server.py's SQLite date() modifier
+  // produces -- built by hand rather than toISOString(), which converts
+  // to UTC first and can shift the date entirely near midnight.
+  const dateStr=`${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+  const w=window.open(`cal-day.html?date=${dateStr}`,`calday_${dateStr}`,
+                      "width=420,height=480");
+  if(w)w.focus();
+}
 
 addEventListener("mousemove",e=>{
   const hit=inBox(noteCloseBox,e.clientX,e.clientY)
           ||inBox(noteExpandBox,e.clientX,e.clientY)
           ||inBox(notePdfBox,e.clientX,e.clientY)
-          ||inBox(termMinBox,e.clientX,e.clientY)
-          ||inBox(termExpandBox,e.clientX,e.clientY)
+          ||inBox(calMinBox,e.clientX,e.clientY)
+          ||inBox(calExpandBox,e.clientX,e.clientY)
+          ||inBox(calPickerBox,e.clientX,e.clientY)
           ||inBox(cpuBox,e.clientX,e.clientY)
-          ||hitIconBox(e.clientX,e.clientY);
+          ||hitIconBox(e.clientX,e.clientY)
+          ||hitDayBox(e.clientX,e.clientY);
   cv.style.cursor=hit?"pointer":"default";
 });
 addEventListener("click",e=>{
@@ -1571,25 +1723,22 @@ addEventListener("click",e=>{
   // minimise before expand: the controls sit next to each other and hiding a
   // panel must never be swallowed by it going fullscreen instead.
   if(inBox(noteCloseBox,e.clientX,e.clientY)){minPanel.note=!minPanel.note;if(fsPanel==="note")fsPanel=null;return;}
-  if(inBox(termMinBox,e.clientX,e.clientY)){minPanel.term=!minPanel.term;if(fsPanel==="term")fsPanel=null;return;}
+  if(inBox(calMinBox,e.clientX,e.clientY)){minPanel.cal=!minPanel.cal;if(fsPanel==="cal")fsPanel=null;return;}
   // expanding a minimised panel restores it, rather than expanding nothing
   if(inBox(noteExpandBox,e.clientX,e.clientY)){minPanel.note=false;toggleFs("note");return;}
-  if(inBox(termExpandBox,e.clientX,e.clientY)){minPanel.term=false;toggleFs("term");return;}
+  if(inBox(calExpandBox,e.clientX,e.clientY)){minPanel.cal=false;toggleFs("cal");return;}
+  // the picker opens a pop-out window rather than toggling any panel state
+  if(inBox(calPickerBox,e.clientX,e.clientY)){openCalPicker();return;}
+  // a day cell before the CPU accordion/icon checks below -- same
+  // adjacent-controls reasoning as the panel header row above.
+  const dayBox=hitDayBox(e.clientX,e.clientY);
+  if(dayBox){openCalDay(dayBox.year,dayBox.month,dayBox.day);return;}
   // icon before the CPU accordion: the two hit boxes are adjacent, not
   // overlapping, but checking the icon first keeps intent unambiguous.
   const icon=hitIconBox(e.clientX,e.clientY);
   if(icon){openSysDetail(icon.key);return;}
   if(inBox(cpuBox,e.clientX,e.clientY)){sysCpuExpanded=!sysCpuExpanded;return;}
 });
-addEventListener("wheel",e=>{
-  // whichever panel is under the pointer takes the scroll. The note body is
-  // a real DOM element with its own overflow, so it is deliberately absent
-  // here: the browser scrolls it and we must not fight that.
-  if(inBox(termBounds,e.clientX,e.clientY)){
-    e.preventDefault();termScroll-=Math.sign(e.deltaY)*2;return;
-  }
-},{passive:false});
-
 if(SHOT){
   AV.shotRun(frame);
 }else{

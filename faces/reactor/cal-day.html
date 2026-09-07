@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<!--
+ai-visualizer: give your AI agent a face.
+Copyright (C) 2026 Jared Rhodenizer
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Day Events</title>
+<style>
+  @font-face{font-family:"Orbitron";src:url("../../assets/Orbitron-Variable.ttf")}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;background:#01050a;overflow:hidden;
+    font-family:"Orbitron",sans-serif;color:#e8f3f7}
+  #hdr{padding:16px 20px 10px;font-size:15px;letter-spacing:.1em;
+    border-bottom:1px solid rgba(90,225,255,.25)}
+  #list{padding:10px 16px;overflow-y:auto;height:calc(100% - 52px)}
+  #list::-webkit-scrollbar{width:7px}
+  #list::-webkit-scrollbar-thumb{background:rgba(90,225,255,.25);border-radius:4px}
+  .ev{display:flex;gap:10px;padding:10px 4px;border-bottom:1px solid rgba(90,225,255,.08)}
+  .dot{width:10px;height:10px;border-radius:50%;flex:none;margin-top:4px}
+  .body{flex:1;min-width:0}
+  .time{font-size:11px;opacity:.6;letter-spacing:.05em}
+  .summary{font-size:14px;margin-top:2px}
+  .loc{font-size:11px;opacity:.5;margin-top:3px}
+  .cal{font-size:10px;opacity:.4;margin-top:3px;letter-spacing:.05em}
+  #empty{padding:20px;opacity:.5;font-size:12px}
+</style>
+</head>
+<body>
+<div id="hdr">Loading…</div>
+<div id="list"></div>
+<script src="../../core.js"></script>
+<script>
+"use strict";
+// sound:false -- this window only ever shows a fetched list, same
+// reasoning as cal-picker.html/sys-detail.html.
+AV.init({sound:false});
+
+const Q = new URLSearchParams(location.search);
+const DATE = Q.get("date") || "";
+const hdrEl = document.getElementById("hdr");
+const listEl = document.getElementById("list");
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+function fmtHeaderDate(dateStr){
+  // dateStr is "YYYY-MM-DD" in LOCAL terms already (server.py's own
+  // SQLite date() modifier produced it that way) -- parsing with an
+  // explicit Y/M/D constructor keeps it local, unlike `new Date(dateStr)`
+  // which treats a bare "YYYY-MM-DD" as UTC midnight and can shift a day.
+  const [y,m,d] = dateStr.split("-").map(Number);
+  if(!y||!m||!d) return dateStr;
+  const dt = new Date(y, m-1, d);
+  return dt.toLocaleDateString(undefined,
+    { weekday:"long", month:"long", day:"numeric", year:"numeric" });
+}
+function fmtTime(ts,allDay){
+  if(allDay) return "All day";
+  const t=new Date(ts*1000);
+  let h=t.getHours();const ampm=h>=12?"PM":"AM";h=h%12;if(h===0)h=12;
+  const mm=String(t.getMinutes()).padStart(2,"0");
+  return `${h}:${mm} ${ampm}`;
+}
+
+AV.ready(a => { document.title = fmtHeaderDate(DATE) + " — " + (a.name || "Cipher"); });
+hdrEl.textContent = fmtHeaderDate(DATE);
+
+if(!DATE){
+  listEl.innerHTML = '<div id="empty">No date given.</div>';
+}else{
+  AV.fetchCalendarDay(DATE).then(data => {
+    const events = data.events || [];
+    if(!events.length){
+      listEl.innerHTML = '<div id="empty">No events this day.</div>';
+      return;
+    }
+    listEl.innerHTML = events.map(ev => `
+      <div class="ev">
+        <div class="dot" style="background:${esc(ev.color||"#5ae1ff")}"></div>
+        <div class="body">
+          <div class="time">${esc(fmtTime(ev.start, ev.allDay))}</div>
+          <div class="summary">${esc(ev.summary)}</div>
+          ${ev.location ? `<div class="loc">${esc(ev.location)}</div>` : ""}
+          <div class="cal">${esc(ev.calendar)}</div>
+        </div>
+      </div>`).join("");
+  }).catch(() => {
+    listEl.innerHTML = '<div id="empty">Could not load events.</div>';
+  });
+}
+</script>
+</body>
+</html>

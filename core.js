@@ -67,6 +67,13 @@
                    plus {history,pctBased} for a face that wants to
                    draw a trend line
                    usageRows() already provides for the token-usage rows.
+     AV.calendar   {calendars:[{pk,name,color}], events:[{summary,start,
+                   allDay,calendar,color}], selected:[pk,...]} — read from
+                   Spark Mail's own local calendar cache by server.py,
+                   polled every 60s. calendars is every calendar Spark
+                   knows about (for a picker); events is the next 3
+                   upcoming across whichever pks are in `selected`, empty
+                   until a face POSTs a selection to /calendar_selection
      AV.setSilentMode(bool)  POSTs the new mode to /mode
      AV.sendTyped(text)  POSTs one typed line to /type, standing in for
                    a spoken push-to-talk turn while silent. Returns the
@@ -244,6 +251,7 @@ const AV = (() => {
     // not a browser-readable metric at all, so this is server-side only.
     // GPU deliberately absent: live utilization needs sudo (powermetrics).
     A.system = raw.system || {};
+    A.calendar = raw.calendar || {};
     A.note = (raw.note && (raw.note.text || noteChartPresent(raw.note.chart))) ? raw.note : null;
     A.activity = Array.isArray(raw.activity) ? raw.activity : [];
     A.transcript = Array.isArray(raw.transcript) ? raw.transcript : [];
@@ -493,6 +501,25 @@ const AV = (() => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
+  };
+
+  // Replaces the full set of selected calendar pks (not additive) --
+  // server.py re-queries immediately, so the panel updates well inside
+  // one /state poll rather than waiting for the 60s background tick.
+  A.setCalendarSelection = (pks) => {
+    return fetch(new URL("calendar_selection", ROOT).href, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pks }),
+    });
+  };
+
+  // One-shot lookup for a clicked day on the month grid -- not part of
+  // the poll cycle, so this is a plain GET a face calls on demand and
+  // awaits, not a value read off AV.calendar. dateStr: "YYYY-MM-DD".
+  A.fetchCalendarDay = (dateStr) => {
+    return fetch(new URL("calendar_day?date=" + encodeURIComponent(dateStr), ROOT).href)
+      .then(r => r.json());
   };
 
   /* ------------------------------ shot harness ----------------------------- */
