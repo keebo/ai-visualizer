@@ -222,7 +222,12 @@ chatPop.addEventListener("click",()=>{
     "width=480,height=680,menubar=no,toolbar=no,location=no,status=no");
 });
 function chatBarShouldShow(){
-  return AV.silentMode&&!(chatPopout&&!chatPopout.closed);
+  // Both modes, from session start (Kevin's ask 2026-09-06, replacing
+  // the old on-face transcript captions panel outright) -- typing in
+  // voice mode is a first-class turn with a spoken reply, same as
+  // typing in backtalk's own terminal always was. Only the pop-out
+  // being open hides it, same one-place-at-a-time rule as before.
+  return !(chatPopout&&!chatPopout.closed);
 }
 function syncSilentUI(){
   const wantBar=chatBarShouldShow();
@@ -241,8 +246,8 @@ function syncSilentUI(){
     }
   }
   // Checked every frame (not just on mode flips) so closing the pop-out
-  // brings the on-face bar back automatically, same as the transcript.
-  if(wantBar&&!barShown){chatBar.classList.add("show");chatInput.focus();}
+  // brings the on-face bar back automatically.
+  if(wantBar&&!barShown){chatBar.classList.add("show");}
   else if(!wantBar&&barShown){chatBar.classList.remove("show");}
 }
 
@@ -546,25 +551,6 @@ function expandIcon(x,y,s,full,alpha){
   }
   ctx.restore();
 }
-// a box with an arrow breaking out of its top-right corner — the
-// universal "open in a new window" glyph, same stroke-drawn style as
-// the others rather than a font glyph.
-function popoutIcon(x,y,s,alpha){
-  const h=s/2;
-  ctx.save();
-  ctx.strokeStyle=`rgba(${alpha})`;
-  ctx.lineWidth=Math.max(1.3,s*.12);
-  ctx.lineCap="round";ctx.lineJoin="round";
-  ctx.beginPath();
-  ctx.moveTo(x-h*.15,y-h*.75);ctx.lineTo(x-h,y-h*.75);ctx.lineTo(x-h,y+h);
-  ctx.lineTo(x+h*.75,y+h);ctx.lineTo(x+h*.75,y+h*.15);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(x-h*.05,y-h*.05);ctx.lineTo(x+h,y-h*.9);
-  ctx.moveTo(x+h*.2,y-h*.9);ctx.lineTo(x+h,y-h*.9);ctx.lineTo(x+h,y-h*.05);
-  ctx.stroke();
-  ctx.restore();
-}
 // down-arrow-into-a-tray — the universal "export/download" glyph, same
 // stroke-based drawn-icon style as minIcon/expandIcon rather than a font
 // glyph, so it never depends on a system font shipping the right symbol.
@@ -586,23 +572,25 @@ function pdfIcon(x,y,s,alpha){
    Both side panels occupy the SAME rectangle, mirrored: same width, same
    top, same bottom. That is what makes the HUD read as one instrument
    instead of two widgets that happened to land near each other. The rail
-   stops above the caption bar, so a panel can never draw over the
-   subtitles. Only ONE panel may be fullscreen at a time and the others
+   stops above the chat bar, so a panel can never draw over the
+   composer. Only ONE panel may be fullscreen at a time and the others
    stand down completely while it is, which is what stops the panel
    underneath bleeding through the one on top. */
-let fsPanel=null;                 // null | "note" | "term" | "subs"
+let fsPanel=null;                 // null | "note" | "term"
 // Minimised, not closed: a panel collapses to its own title bar and stays
 // there, so nothing is ever thrown away and the control that hid it is the
 // control that brings it back.
-let minPanel={note:false,term:false,subs:false};
+let minPanel={note:false,term:false};
 let RAIL={w:0,top:0,bottom:0,h:0,left:0,right:0};
-let subsCache=null;               // this frame's caption geometry
 function computeRail(){
   const m=Math.min(W,H);
   const w=Math.min(W*.27,480);
   const top=Math.round(m*.17);
-  const capH=subsCache?subsCache.boxH:0;
-  const floor=capH?(H-m*.085-capH):(H-m*.075);
+  // The rail floor used to yield to the canvas caption panel; that's
+  // gone (the DOM chat bar replaced it, 2026-09-06), so the floor now
+  // yields to the bar's real measured top edge instead when visible.
+  const barRect=chatBar.classList.contains("show")?chatBar.getBoundingClientRect():null;
+  const floor=barRect?Math.min(H-m*.02,barRect.top):(H-m*.075);
   const bottom=Math.round(floor-m*.02);
   RAIL={w,top,bottom,h:Math.max(Math.round(m*.2),bottom-top),
         left:Math.round(m*.03),right:Math.round(W-m*.03-w)};
@@ -1372,118 +1360,11 @@ function drawTerminal(dt){
 /* ---------------- frame ---------------- */
 let now=0,thinkingAmt=0;
 
-/* ---------------- subtitles: the spoken conversation, in case you were not
-   listening. Fed by .voice_transcript, which backtalk writes one line at a
-   time. Laid out BEFORE the side panels each frame so the rail knows how
-   much room to leave, which is what keeps a panel off the captions.
-   Scrolls on the wheel and expands to fullscreen like the others. */
-let subsPresence=0,subsScroll=0,subsBounds=null,subsExpandBox=null,subsMinBox=null,subsPopoutBox=null;
-// The pop-out window itself, or null. Checked every frame (see frame())
-// so the main panel comes back the instant the user closes it, without
-// relying on that window remembering to tell us.
-let subsPopout=null;
-const SUBS_FONT="'SF Mono',Menlo,Consolas,monospace";
-
-function subsLayout(){
-  if(subsPopout&&!subsPopout.closed)return null;
-  const items=AV.transcript||[];
-  if(!items.length)return null;
-  const full=fsPanel==="subs";
-  const mini=minPanel.subs&&!full;
-  const m=Math.min(W,H);
-  const fs=Math.max(13,Math.round(m*(full?.024:.021)));
-  const lineH=Math.round(fs*1.45);
-  const pad=Math.round(m*.016);
-  const boxW=full?W-pad*2:Math.min(W*.62,1180);
-  // minimised keeps a labelled bar so the control that hid it is still there
-  const titleH=(full||mini)?Math.round(fs*2.2):0;
-  const maxLines=mini?0:(full?Math.max(3,Math.floor((H-pad*2-titleH-pad)/lineH)):5);
-
-  ctx.save();
-  ctx.font=`${fs}px ${SUBS_FONT}`;
-  const all=[];
-  for(const it of items){
-    const mine=String(it.role||"").toLowerCase()==="you";
-    const prefix=(mine?"YOU":String(it.role||AV.name).toUpperCase())+"  ";
-    let line=prefix;
-    for(const w of String(it.text||"").split(" ")){
-      const t=line?line+" "+w:w;
-      if(ctx.measureText(t).width>boxW-pad*2&&line!==prefix){all.push({text:line,mine});line="      "+w;}
-      else line=t;
-    }
-    if(line.trim())all.push({text:line,mine});
-  }
-  ctx.restore();
-  if(!all.length)return null;
-
-  const maxScroll=Math.max(0,all.length-maxLines);
-  subsScroll=Math.max(0,Math.min(subsScroll,maxScroll));
-  const startIdx=Math.max(0,all.length-maxLines-subsScroll);
-  const lines=all.slice(startIdx,startIdx+maxLines);
-  const boxH=mini?titleH:(titleH+lines.length*lineH+pad*1.4);
-  const x0=full?pad:Math.round(cx-boxW/2);
-  const y0=full?pad:Math.round(H-m*.085-boxH);
-  return {lines,total:all.length,maxScroll,fs,lineH,pad,boxW,boxH,x0,y0,titleH,full,mini};
-}
-
-function drawSubtitles(dt){
-  const L=subsCache;
-  const has=!!L;
-  subsPresence+=((has?1:0)-subsPresence)*Math.min(1,dt/300);
-  if(subsPresence<.01||!L){subsBounds=null;subsExpandBox=null;subsPopoutBox=null;return;}
-  if(fsPanel&&fsPanel!=="subs"){subsBounds=null;subsExpandBox=null;subsPopoutBox=null;return;}
-
-  const {lines,fs,lineH,pad,boxW,boxH,x0,y0,titleH,full,mini}=L;
-  ctx.save();
-  ctx.globalAlpha=subsPresence;
-  ctx.translate(0,(1-subsPresence)*(lineH*.6));
-
-  ctx.fillStyle="rgba(2,10,18,.80)";
-  panelPath(x0,y0,boxW,boxH,panelCut(boxW,boxH));
-  ctx.fill();
-  ctx.strokeStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.30)`;
-  ctx.lineWidth=1;ctx.stroke();
-  ctx.save();ctx.clip();   // nothing this panel draws escapes the frame
-
-  let ty=y0+pad;
-  if(titleH){
-    ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.12)`;
-    ctx.fillRect(x0,y0,boxW,titleH);
-    ctx.textAlign="left";ctx.textBaseline="middle";
-    ctx.font=`${Math.round(fs*.85)}px ${UI_FONT}`;
-    ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.9)`;
-    ctx.fillText(mini?`TRANSCRIPT (${L.total})`:"TRANSCRIPT",x0+pad,y0+titleH/2);
-    ty=y0+titleH+pad*.6;
-  }
-
-  // the expand control sits INSIDE the top-right corner. It previously used
-  // the word FULLSCREEN anchored at the box top, which drew half of itself
-  // above the frame and read as floating loose on the screen.
-  const exS=Math.round(fs*.95);
-  const cY=titleH?y0+titleH/2:y0+pad*.7+exS/2;
-  const miCx=x0+boxW-pad-exS/2;
-  minIcon(miCx,cY,exS,mini,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.75`);
-  subsMinBox={x:miCx-exS,y:cY-exS,w:exS*2,h:exS*2};
-  const exCx=miCx-exS*2-pad*.4;
-  expandIcon(exCx,cY,exS,full,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.7`);
-  subsExpandBox={x:exCx-exS,y:cY-exS,w:exS*2,h:exS*2};
-  const poCx=exCx-exS*2-pad*.4;
-  popoutIcon(poCx,cY,exS,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.7`);
-  subsPopoutBox={x:poCx-exS,y:cY-exS,w:exS*2,h:exS*2};
-
-  ctx.font=`${fs}px ${SUBS_FONT}`;
-  ctx.textAlign="left";ctx.textBaseline="alphabetic";
-  lines.forEach((d,i)=>{
-    ctx.fillStyle=d.mine
-      ? `rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.92)`
-      : `rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.95)`;
-    ctx.fillText(d.text,x0+pad,ty+lineH*(i+1)-Math.round(fs*.35));
-  });
-  ctx.restore();                       // end clip
-  ctx.restore();
-  ctx.globalAlpha=1;ctx.textAlign="left";
-  subsBounds={x:x0,y:y0,w:boxW,h:boxH};
-}
+/* The on-face transcript captions panel used to live here -- removed
+   2026-09-06 at Kevin's ask: the chat bar (and its chat.html pop-out,
+   which shows the whole conversation as bubbles) replaced it outright,
+   in both voice and silent modes, and keeping both meant the same
+   conversation rendered twice at the bottom of the screen. */
 
 function frame(dt){
   AV.tick(dt);
@@ -1495,7 +1376,7 @@ function frame(dt){
   if(fsPanel&&volBox.style.pointerEvents!=="none")volHide();
   const state=AV.state, alert=AV.alert;
   // Listening owns the whole screen — that's the point of it (see the
-  // file header). A fullscreen note/terminal/subs panel left open from
+  // file header). A fullscreen note/terminal panel left open from
   // earlier draws on top of that every frame and silently buries it, so
   // holding the PTT key never actually reclaims the screen back.
   if(state==="listening"&&fsPanel)fsPanel=null;
@@ -1511,14 +1392,9 @@ function frame(dt){
   if(thinkingAmt>.2)drawThinking(dt,thinkingAmt);else thinkLabel=null;
   drawStateTag(dt,state,alert);
   drawUsage();
-  // order matters: the captions are measured first so the rail knows what
-  // space to leave, then the panels fill the rail, then the captions draw
-  // on top of nothing at all.
-  subsCache=subsLayout();
   computeRail();
   drawNotePanel(dt);
   drawTerminal(dt);
-  drawSubtitles(dt);
   if(alert)drawAlertFrame(now);
 }
 
@@ -1529,6 +1405,9 @@ addEventListener("resize",resize);
 resize();
 
 addEventListener("keydown",e=>{
+  // The chat composer is always on screen now -- typing a plain "f"
+  // into it must never toggle fullscreen out from under the message.
+  if(e.target===chatInput)return;
   if(e.key==="f"||e.key==="F"){
     document.fullscreenElement?document.exitFullscreen()
       :document.documentElement.requestFullscreen();
@@ -1547,10 +1426,7 @@ addEventListener("mousemove",e=>{
           ||inBox(noteExpandBox,e.clientX,e.clientY)
           ||inBox(notePdfBox,e.clientX,e.clientY)
           ||inBox(termMinBox,e.clientX,e.clientY)
-          ||inBox(termExpandBox,e.clientX,e.clientY)
-          ||inBox(subsMinBox,e.clientX,e.clientY)
-          ||inBox(subsExpandBox,e.clientX,e.clientY)
-          ||inBox(subsPopoutBox,e.clientX,e.clientY);
+          ||inBox(termExpandBox,e.clientX,e.clientY);
   cv.style.cursor=hit?"pointer":"default";
 });
 addEventListener("click",e=>{
@@ -1564,22 +1440,9 @@ addEventListener("click",e=>{
   // panel must never be swallowed by it going fullscreen instead.
   if(inBox(noteCloseBox,e.clientX,e.clientY)){minPanel.note=!minPanel.note;if(fsPanel==="note")fsPanel=null;return;}
   if(inBox(termMinBox,e.clientX,e.clientY)){minPanel.term=!minPanel.term;if(fsPanel==="term")fsPanel=null;return;}
-  if(inBox(subsMinBox,e.clientX,e.clientY)){minPanel.subs=!minPanel.subs;if(fsPanel==="subs")fsPanel=null;return;}
-  // The main panel vanishes rather than minimising -- Kevin's ask was a
-  // real separate window, not a second copy of the data on screen. If
-  // it's already open, focus the existing one instead of stacking a
-  // second window on top of it.
-  if(inBox(subsPopoutBox,e.clientX,e.clientY)){
-    if(fsPanel==="subs")fsPanel=null;
-    if(subsPopout&&!subsPopout.closed){subsPopout.focus();return;}
-    subsPopout=window.open("transcript.html","cipherTranscript",
-      "width=440,height=640,menubar=no,toolbar=no,location=no,status=no");
-    return;
-  }
   // expanding a minimised panel restores it, rather than expanding nothing
   if(inBox(noteExpandBox,e.clientX,e.clientY)){minPanel.note=false;toggleFs("note");return;}
   if(inBox(termExpandBox,e.clientX,e.clientY)){minPanel.term=false;toggleFs("term");return;}
-  if(inBox(subsExpandBox,e.clientX,e.clientY)){minPanel.subs=false;toggleFs("subs");return;}
 });
 addEventListener("wheel",e=>{
   // whichever panel is under the pointer takes the scroll. The note body is
@@ -1587,9 +1450,6 @@ addEventListener("wheel",e=>{
   // here: the browser scrolls it and we must not fight that.
   if(inBox(termBounds,e.clientX,e.clientY)){
     e.preventDefault();termScroll-=Math.sign(e.deltaY)*2;return;
-  }
-  if(inBox(subsBounds,e.clientX,e.clientY)){
-    e.preventDefault();subsScroll-=Math.sign(e.deltaY)*2;return;
   }
 },{passive:false});
 
