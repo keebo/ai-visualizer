@@ -108,8 +108,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
   <div id="modelRow"><span>MODEL</span>
     <label><input type="radio" name="model" value="haiku">HAIKU</label>
     <label><input type="radio" name="model" value="fast">SONNET</label>
-    <label><input type="radio" name="model" value="fable">FABLE</label>
     <label><input type="radio" name="model" value="deep">OPUS</label>
+    <label><input type="radio" name="model" value="fable">FABLE</label>
   </div>
   <button class="modebtn" id="modeBtn">⏼ GO SILENT</button>
 </div>
@@ -558,12 +558,35 @@ function drawUsage(){
 // what he wanted). The one interactive piece kept: clicking the CPU row
 // expands per-core percentages beneath it, markdown-section style,
 // rather than a permanent always-on graph for every metric.
-let cpuBox=null,sysCpuExpanded=false;
+// three ascending bars -- the "open detail view" glyph, same stroke
+// style as minIcon/expandIcon/pdfIcon rather than a font glyph.
+function chartIcon(x,y,s,alpha){
+  const h=s/2;
+  ctx.save();
+  ctx.strokeStyle=`rgba(${alpha})`;
+  ctx.lineWidth=Math.max(1.3,s*.16);
+  ctx.lineCap="round";
+  const bw=s*.55;
+  const xs=[x-bw/2,x,x+bw/2],hs=[h*.6,h*1.0,h*.35];
+  for(let i=0;i<3;i++){
+    ctx.beginPath();ctx.moveTo(xs[i],y+h*.6);ctx.lineTo(xs[i],y+h*.6-hs[i]);ctx.stroke();
+  }
+  ctx.restore();
+}
+let cpuBox=null,sysCpuExpanded=false,sysIconBoxes=[];
+function openSysDetail(metric){
+  const w=window.open(`sys-detail.html?metric=${encodeURIComponent(metric)}`,
+                      `sysdetail_${metric}`,"width=560,height=440");
+  if(w)w.focus();
+}
 function drawSysStats(){
   const rows=AV.util.sysRows();
+  sysIconBoxes=[];
   if(!rows.length){cpuBox=null;return;}
   const fs=Math.round(Math.min(W,H)*.02);
   const coreFs=Math.round(fs*.78);
+  const iconS=Math.round(fs*.62);
+  const textX=18+iconS+Math.round(fs*.4);
   ctx.save();
   ctx.textAlign="left";ctx.textBaseline="alphabetic";
   let y=fs+16;
@@ -572,20 +595,24 @@ function drawSysStats(){
     const c=r.level==="red"?RED:r.level==="yellow"?AMBER:GREEN;
     ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`;
     const label=`${r.label} ${r.text}`;
-    ctx.fillText(label,18,y);
+    ctx.fillText(label,textX,y);
+    chartIcon(18+iconS/2,y-fs*.55,iconS,`${STEEL[0]},${STEEL[1]},${STEEL[2]},.65`);
+    // right edge lands exactly where cpuBox's left edge starts (textX-8)
+    // so the icon and the CPU row's own text-click accordion never overlap.
+    sysIconBoxes.push({key:r.metric,x:8,y:y-fs,w:textX-16,h:fs+8});
     if(r.label==="CPU"){
       // generous but measured hit box, same spirit as the drawn-icon
       // click targets elsewhere -- exact text width plus a little air,
       // not a fixed guess that could drift out of sync with the font.
       const tw=ctx.measureText(label).width;
-      cpuBox={x:10,y:y-fs,w:tw+16,h:fs+8};
+      cpuBox={x:textX-8,y:y-fs,w:tw+16,h:fs+8};
       if(sysCpuExpanded&&r.cores&&r.cores.length){
         ctx.font=`${coreFs}px ${UI_FONT}`;
         r.cores.forEach((pct,i)=>{
           y+=coreFs+4;
           const cc=pct>=80?RED:pct>=50?AMBER:GREEN;
           ctx.fillStyle=`rgba(${cc[0]},${cc[1]},${cc[2]},.75)`;
-          ctx.fillText(`  core ${i}  ${Math.round(pct)}%`,18,y);
+          ctx.fillText(`  core ${i}  ${Math.round(pct)}%`,textX,y);
         });
       }
     }
@@ -1522,6 +1549,7 @@ function inBox(b,x,y){
   return b&&x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h;
 }
 function toggleFs(which){ fsPanel = fsPanel===which ? null : which; }
+function hitIconBox(x,y){ return sysIconBoxes.find(b=>inBox(b,x,y)); }
 
 addEventListener("mousemove",e=>{
   const hit=inBox(noteCloseBox,e.clientX,e.clientY)
@@ -1529,7 +1557,8 @@ addEventListener("mousemove",e=>{
           ||inBox(notePdfBox,e.clientX,e.clientY)
           ||inBox(termMinBox,e.clientX,e.clientY)
           ||inBox(termExpandBox,e.clientX,e.clientY)
-          ||inBox(cpuBox,e.clientX,e.clientY);
+          ||inBox(cpuBox,e.clientX,e.clientY)
+          ||hitIconBox(e.clientX,e.clientY);
   cv.style.cursor=hit?"pointer":"default";
 });
 addEventListener("click",e=>{
@@ -1546,6 +1575,10 @@ addEventListener("click",e=>{
   // expanding a minimised panel restores it, rather than expanding nothing
   if(inBox(noteExpandBox,e.clientX,e.clientY)){minPanel.note=false;toggleFs("note");return;}
   if(inBox(termExpandBox,e.clientX,e.clientY)){minPanel.term=false;toggleFs("term");return;}
+  // icon before the CPU accordion: the two hit boxes are adjacent, not
+  // overlapping, but checking the icon first keeps intent unambiguous.
+  const icon=hitIconBox(e.clientX,e.clientY);
+  if(icon){openSysDetail(icon.key);return;}
   if(inBox(cpuBox,e.clientX,e.clientY)){sysCpuExpanded=!sysCpuExpanded;return;}
 });
 addEventListener("wheel",e=>{

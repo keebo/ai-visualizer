@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<!--
+ai-visualizer: give your AI agent a face.
+Copyright (C) 2026 Jared Rhodenizer
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>System Detail</title>
+<style>
+  @font-face{font-family:"Orbitron";src:url("../../assets/Orbitron-Variable.ttf")}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;background:#01050a;overflow:hidden;
+    font-family:"Orbitron",sans-serif;color:#e8f3f7}
+  #hdr{padding:16px 20px 6px;display:flex;align-items:baseline;gap:12px;
+    letter-spacing:.06em}
+  #hdr .label{font-size:15px;letter-spacing:.14em;opacity:.85}
+  #hdr .val{font-size:22px;font-weight:600}
+  #graphWrap{padding:6px 20px}
+  canvas{display:block;width:100%}
+  #list{padding:8px 20px 18px;font-size:12px;line-height:2;overflow-y:auto;
+    max-height:38vh}
+  #list::-webkit-scrollbar{width:7px}
+  #list::-webkit-scrollbar-thumb{background:rgba(90,225,255,.25);border-radius:4px}
+  #list .hdr{opacity:.5;letter-spacing:.1em;font-size:10px;margin-bottom:6px}
+  #list .row{display:flex;justify-content:space-between;gap:14px;opacity:.85}
+  #list .row span:first-child{overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  #list .row span:last-child{flex:none;opacity:.7}
+  #empty{opacity:.4;font-size:12px}
+</style>
+</head>
+<body>
+<div id="hdr"><span class="label" id="mLabel">—</span><span class="val" id="mVal"></span></div>
+<div id="graphWrap"><canvas id="g"></canvas></div>
+<div id="list"></div>
+<script src="../../core.js"></script>
+<script>
+"use strict";
+// sound:false -- this window only ever draws a graph, same reasoning as
+// chat.html/transcript.html: it must never spawn its own thinking-sound player.
+AV.init({sound:false});
+const Q = new URLSearchParams(location.search);
+const METRIC = Q.get("metric") || "cpu";
+AV.ready(a => { document.title = (a.name || "Cipher") + " — " + METRIC.toUpperCase(); });
+
+const AMBER=[255,180,70], RED=[255,60,50], GREEN=[61,220,132];
+
+const cv = document.getElementById("g");
+const ctx = cv.getContext("2d");
+const mLabel = document.getElementById("mLabel");
+const mVal = document.getElementById("mVal");
+const listEl = document.getElementById("list");
+
+function resize() {
+  const w = document.getElementById("graphWrap").clientWidth;
+  const h = Math.max(160, Math.round(innerHeight * 0.42));
+  const dpr = devicePixelRatio || 1;
+  cv.width = w * dpr; cv.height = h * dpr;
+  cv.style.height = h + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener("resize", resize);
+resize();
+
+function fmtRate(n) {
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB/s";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB/s";
+  return Math.round(n) + " B/s";
+}
+function fmtBytes(n) {
+  if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(2) + " GB";
+  if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return Math.round(n) + " B";
+}
+
+// Same graduated-graph logic as the panel build earlier the same night
+// (gridlines, axis labels, shaded green/yellow/red threshold bands) --
+// just drawn to fill this standalone window instead of an embedded panel.
+function drawGraph(row) {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  const history = row.history || [];
+  if (history.length < 2) {
+    ctx.fillStyle = "rgba(150,180,200,.4)";
+    ctx.font = "13px Orbitron, sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("Gathering history…", w / 2, h / 2);
+    return;
+  }
+  const pad = { l: 54, r: 12, t: 10, b: 10 };
+  const gx = pad.l, gy = pad.t, gw = w - pad.l - pad.r, gh = h - pad.t - pad.b;
+  const max = row.pctBased ? 100 : Math.max(1, (row.greenBelow || 0) * 1.5, ...history);
+  const toY = v => gy + gh - Math.min(1, Math.max(0, v / max)) * gh;
+  if (row.yellowBelow != null) {
+    ctx.fillStyle = "rgba(255,180,70,.10)";
+    ctx.fillRect(gx, toY(row.yellowBelow), gw, toY(row.greenBelow) - toY(row.yellowBelow));
+    ctx.fillStyle = "rgba(255,60,50,.10)";
+    ctx.fillRect(gx, toY(max), gw, toY(row.yellowBelow) - toY(max));
+  } else if (row.greenBelow != null) {
+    ctx.fillStyle = "rgba(255,60,50,.10)";
+    ctx.fillRect(gx, toY(max), gw, toY(row.greenBelow) - toY(max));
+  }
+  ctx.strokeStyle = "rgba(150,180,200,.18)"; ctx.lineWidth = 1;
+  ctx.font = "11px Orbitron, sans-serif";
+  ctx.fillStyle = "rgba(150,180,200,.55)";
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (const frac of [0, .25, .5, .75, 1]) {
+    const yy = gy + gh - frac * gh;
+    ctx.beginPath(); ctx.moveTo(gx, yy); ctx.lineTo(gx + gw, yy); ctx.stroke();
+    const label = row.pctBased ? Math.round(frac * 100) + "%" : (frac * max).toFixed(1);
+    ctx.fillText(label, gx - 8, yy);
+  }
+  const c = row.level === "red" ? RED : row.level === "yellow" ? AMBER : GREEN;
+  ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},.9)`;
+  ctx.lineWidth = 2; ctx.lineJoin = "round";
+  ctx.beginPath();
+  history.forEach((v, i) => {
+    const px = gx + (i / (history.length - 1)) * gw;
+    const py = toY(v);
+    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+}
+
+// GPU deliberately has no top-contributor list -- powermetrics never
+// populates per-process GPU time on this machine/OS build, a real
+// platform gap (Kevin's call, 2026-09-06: skip it rather than fake it).
+function topSection(row) {
+  if (row.topFiles && row.topFiles.length) {
+    return { title: "LARGEST FILES IN HOME FOLDER (updates every 24h)",
+             rows: row.topFiles.map(f => [f.path, fmtBytes(f.bytes)]) };
+  }
+  if (!row.top || !row.top.length) return null;
+  const fmtVal = v => {
+    if (METRIC === "cpu") return Math.round(v / 10) + "% of a core";
+    if (METRIC === "mem") return v.toFixed(1) + "%";
+    return fmtRate(v);
+  };
+  return { title: "TOP CONTRIBUTORS", rows: row.top.map(t => [t.name, fmtVal(t.value)]) };
+}
+
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+let lastT = performance.now();
+function render() {
+  const now = performance.now();
+  const dt = Math.min(2000, now - lastT); lastT = now;
+  // AV.system only updates inside AV.tick() (see core.js), not on its own
+  // poll timer -- same reason chat.html/transcript.html both drive their
+  // own render off a manual tick, not requestAnimationFrame, since rAF
+  // suspends entirely in an unfocused pop-out window.
+  AV.tick(dt);
+  const row = (AV.util.sysRows() || []).find(r => r.metric === METRIC);
+  if (!row) {
+    mLabel.textContent = METRIC.toUpperCase();
+    mVal.textContent = "";
+    listEl.innerHTML = '<div id="empty">No data yet…</div>';
+    ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
+    return;
+  }
+  mLabel.textContent = row.label;
+  mVal.textContent = row.text;
+  mVal.style.color = row.level === "red" ? "#ff3c32" : row.level === "yellow" ? "#ffb446" : "#3ddc84";
+  drawGraph(row);
+  const top = topSection(row);
+  listEl.innerHTML = !top ? "" :
+    `<div class="hdr">${esc(top.title)}</div>` +
+    top.rows.map(([n, v]) => `<div class="row"><span>${esc(n)}</span><span>${esc(v)}</span></div>`).join("");
+}
+render();
+setInterval(render, 500);
+</script>
+</body>
+</html>

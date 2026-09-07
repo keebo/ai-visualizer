@@ -111,6 +111,7 @@ import json
 import math
 import mimetypes
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -286,32 +287,131 @@ _sys_history = {k: deque(maxlen=SYS_HISTORY_LEN) for k in _sys_stats}
 _sys_prev_net = None   # (bytes_total, monotonic_ts), for a manual rate calc
 _sys_cpu_cores = []    # per-core %, latest reading only -- no history needed
                        # for an accordion that only ever shows "right now"
+# Top-contributor lists (latest reading only, same reasoning as cores above --
+# a detail window's process list only ever needs to show "right now").
+_sys_top_cpu = []
+_sys_top_mem_list = []
+_sys_top_disk_io = []
+_sys_top_net = []
 
-_PM_CORE_RE = re.compile(r"^CPU (\d+) active residency:\s*([\d.]+)%", re.M)
-_PM_GPU_RE = re.compile(r"^GPU HW active residency:\s*([\d.]+)%", re.M)
+_TOP_N = 5   # rows shown in each detail window's "top contributors" list
 
 
-def _sys_cpu_gpu_powermetrics():
-    # Per-core CPU and GPU utilization both require `powermetrics` -- no
-    # other standard macOS tool exposes either (top only gives an
-    # aggregate). Runs passwordless via the sudoers rule scoped to exactly
-    # this one binary (/etc/sudoers.d/powermetrics-nopasswd, 2026-09-06).
-    # `-n` (never prompt) means a broken/missing grant fails silently to
-    # None instead of hanging this background thread on a password prompt
-    # nobody's watching. The 1-second sample window fits the existing 3s
-    # cadence the same way iostat's blocking -w 1 already does.
+def _sys_powermetrics():
+    # Per-core CPU, GPU, and per-process CPU/disk-IO/network breakdowns all
+    # come from this one `powermetrics` call -- no other standard macOS
+    # tool exposes per-core or per-process network/disk-IO attribution.
+    # Runs passwordless via the sudoers rule scoped to exactly this binary
+    # (/etc/sudoers.d/powermetrics-nopasswd, 2026-09-06). `-n` (never
+    # prompt) means a broken/missing grant fails silently to empty results
+    # instead of hanging this background thread on a password prompt
+    # nobody's watching. `--format plist` -- structured fields, not the
+    # human-readable table (fixed-width columns, names truncated/collide
+    # with the grid, multi-word process names break naive parsing).
+    # Per-process GPU time was tried (--show-process-gpu) and never
+    # populates on this machine/OS build, even for a genuinely GPU-heavy
+    # process -- a platform gap, not a parsing bug, so GPU gets no
+    # top-contributor list (Kevin's call, 2026-09-06: skip it, don't fake it).
     try:
         out = subprocess.run(
             ["sudo", "-n", "/usr/bin/powermetrics", "-n", "1", "-i", "1000",
-             "--samplers", "cpu_power,gpu_power"],
-            capture_output=True, text=True, timeout=4).stdout
+             "--samplers", "cpu_power,gpu_power,tasks",
+             "--show-process-io", "--show-process-netstats",
+             "--format", "plist"],
+            capture_output=True, timeout=4).stdout
+        data = plistlib.loads(out)
     except Exception:
-        return None, None
-    cores_by_idx = {int(i): float(v) for i, v in _PM_CORE_RE.findall(out)}
-    cores = [cores_by_idx[i] for i in sorted(cores_by_idx)] if cores_by_idx else None
-    m = _PM_GPU_RE.search(out)
-    gpu = round(float(m.group(1)), 1) if m else None
-    return cores, gpu
+        return None, None, [], [], []
+    cores = None
+    try:
+        by_idx = {}
+        for cluster in data["processor"]["clusters"]:
+            for cpu in cluster["cpus"]:
+                by_idx[cpu["cpu"]] = round(100.0 * (1 - cpu["idle_ratio"]), 1)
+        cores = [by_idx[i] for i in sorted(by_idx)] if by_idx else None
+    except Exception:
+        pass
+    gpu = None
+    try:
+        gpu = round(100.0 * (1 - data["gpu"]["idle_ratio"]), 1)
+    except Exception:
+        pass
+    tasks = data.get("tasks", [])
+
+    def top(key_fn):
+        # DEAD_TASKS is powermetrics' own aggregate bucket for already-exited
+        # processes' residual accounting -- real, but not a single app Kevin
+        # could act on, so it's noise in a "what's using this" list.
+        real = [t for t in tasks if t.get("name") != "DEAD_TASKS"]
+        ranked = sorted(real, key=key_fn, reverse=True)[:_TOP_N]
+        return [{"name": t.get("name", "?"), "value": round(key_fn(t), 1)}
+                for t in ranked if key_fn(t) > 0]
+
+    top_cpu = top(lambda t: t.get("cputime_ms_per_s") or 0)
+    top_disk_io = top(lambda t: (t.get("diskio_bytesread_per_s") or 0)
+                                + (t.get("diskio_byteswritten_per_s") or 0))
+    top_net = top(lambda t: (t.get("bytes_received_per_s") or 0)
+                            + (t.get("bytes_sent_per_s") or 0))
+    return cores, gpu, top_cpu, top_disk_io, top_net
+
+
+def _sys_top_mem():
+    # Top processes by memory share -- `ps -m` sorts by memory usage
+    # descending on macOS, no sudo needed (unlike everything routed
+    # through powermetrics above).
+    try:
+        out = subprocess.run(["ps", "-Ao", "pid,%mem,comm", "-m"],
+                              capture_output=True, text=True, timeout=3).stdout
+        rows = []
+        for line in out.splitlines()[1:]:   # skip header
+            parts = line.split(None, 2)
+            if len(parts) == 3:
+                rows.append({"name": os.path.basename(parts[2]),
+                            "value": float(parts[1])})
+        return [r for r in rows if r["value"] > 0][:_TOP_N]
+    except Exception:
+        return []
+
+
+# Largest files under the home folder -- a disk-SPACE question, not a
+# process-load one, so it doesn't belong in the 3s sampler loop at all:
+# a full home-folder walk is far too slow to repeat every few seconds,
+# and unlike CPU/mem/network this genuinely doesn't change minute to
+# minute. Kevin's explicit call, 2026-09-06: scan on its own 24-hour
+# timer, cached, so the detail window always has an instant answer.
+SYS_DISK_SCAN_S = 24 * 60 * 60
+_sys_disk_files_lock = threading.Lock()
+_sys_disk_files = []
+
+
+def _sys_scan_top_files(n=10):
+    home = Path.home()
+    biggest = []   # small n -- a plain list + sort beats a heap for clarity
+    for root, dirs, files in os.walk(home, onerror=lambda e: None):
+        for fn in files:
+            p = os.path.join(root, fn)
+            try:
+                if os.path.islink(p):
+                    continue
+                size = os.path.getsize(p)
+            except OSError:
+                continue
+            biggest.append((size, p))
+    biggest.sort(reverse=True)
+    rel = lambda p: os.path.relpath(p, home)
+    return [{"path": rel(p), "bytes": s} for s, p in biggest[:n]]
+
+
+def _sys_disk_scan_loop():
+    global _sys_disk_files
+    while True:
+        try:
+            files = _sys_scan_top_files()
+        except Exception:
+            files = []
+        with _sys_disk_files_lock:
+            _sys_disk_files = files
+        time.sleep(SYS_DISK_SCAN_S)
 
 
 def _sys_cpu_pct():
@@ -413,14 +513,15 @@ def _sys_net_total_bytes(iface: str):
 
 
 def _sys_sample_loop():
-    global _sys_prev_net, _sys_cpu_cores
+    global _sys_prev_net, _sys_cpu_cores, _sys_top_cpu, _sys_top_mem_list, _sys_top_disk_io, _sys_top_net
     iface = _sys_default_iface()
     while True:
         cpu = _sys_cpu_pct()
         mem = _sys_mem_pct()
         disk_pct = _sys_disk_pct()
         disk_io = _sys_disk_io_mbs()
-        cpu_cores, gpu_pct = _sys_cpu_gpu_powermetrics()
+        cpu_cores, gpu_pct, top_cpu, top_disk_io, top_net = _sys_powermetrics()
+        top_mem = _sys_top_mem()
         net_kbs = None
         total = _sys_net_total_bytes(iface)
         now = time.monotonic()
@@ -437,6 +538,10 @@ def _sys_sample_loop():
             _sys_stats.update(sample)
             if cpu_cores:
                 _sys_cpu_cores = cpu_cores
+            _sys_top_cpu = top_cpu
+            _sys_top_mem_list = top_mem
+            _sys_top_disk_io = top_disk_io
+            _sys_top_net = top_net
             # None (a metric that failed or hasn't produced its first
             # real sample yet) is skipped rather than plotted as 0 --
             # a real 0% reads identically to "no data" otherwise, and
@@ -453,7 +558,13 @@ def read_sys_stats() -> dict:
         out = dict(_sys_stats)
         out["history"] = {k: list(v) for k, v in _sys_history.items()}
         out["cpu_cores"] = list(_sys_cpu_cores)
-        return out
+        out["top_cpu"] = list(_sys_top_cpu)
+        out["top_mem"] = list(_sys_top_mem_list)
+        out["top_disk_io"] = list(_sys_top_disk_io)
+        out["top_net"] = list(_sys_top_net)
+    with _sys_disk_files_lock:
+        out["top_disk_files"] = list(_sys_disk_files)
+    return out
 
 
 def read_bus():
@@ -766,6 +877,7 @@ def open_visualizer(url):
 
 if __name__ == "__main__":
     threading.Thread(target=_sys_sample_loop, daemon=True).start()
+    threading.Thread(target=_sys_disk_scan_loop, daemon=True).start()
     mode = f"MOCK={MOCK}" if MOCK else f"bus: {BUS}"
     root = f"http://127.0.0.1:{PORT}/"
     # The browser opens on the configured face; the gallery stays at "/" for switching.

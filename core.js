@@ -598,26 +598,37 @@ const AV = (() => {
     // greenBelow/yellowBelow travel with the row (not just baked into
     // `level`) so a face's expanded/fullscreen view can shade the actual
     // threshold zones on the graph, not just color the current line.
-    const pctRow = (label, key, pct, greenBelow, yellowBelow, extra) => {
+    // `metric` travels on every row -- the stable short identifier a
+    // detail-window pop-out (sys-detail.html?metric=<metric>) and the icon
+    // click handler both key off. Deliberately separate from `key`
+    // (the server-side stat name used for the history lookup, e.g.
+    // "cpu_pct") -- collapsing the two into one field was a real bug
+    // (2026-09-07): sys-detail.html compared the URL param against "cpu"/
+    // "mem" but was receiving "cpu_pct"/"mem_pct", so neither ever
+    // matched and both fell through to the byte-rate formatter meant for
+    // DISK I/O/NET, showing nonsense units ("B/s") next to CPU/MEM's
+    // per-app numbers.
+    const pctRow = (label, metric, key, pct, greenBelow, yellowBelow, extra) => {
       if (pct == null) return;
       const level = pct >= yellowBelow ? "red" : pct >= greenBelow ? "yellow" : "green";
-      out.push({ label, level, text: Math.round(pct) + "%",
+      out.push({ label, metric, level, text: Math.round(pct) + "%",
                 history: hist[key] || [], pctBased: true,
                 greenBelow, yellowBelow, ...extra });
     };
-    // cores travels on the CPU row (not a separate history series) --
-    // it's a per-core snapshot for the click-to-expand accordion, not a
-    // second trend line, so it doesn't need the deque history treatment.
-    pctRow("CPU", "cpu_pct", s.cpu_pct, 50, 80, { cores: s.cpu_cores || [] });
-    pctRow("MEM", "mem_pct", s.mem_pct, 50, 80);
-    pctRow("DISK", "disk_pct", s.disk_pct, 70, 90);
-    pctRow("GPU", "gpu_pct", s.gpu_pct, 50, 80);
+    // cores/top travel on their row (not a separate history series) --
+    // both are latest-snapshot data for a click-to-expand accordion or a
+    // detail window's process list, not a second trend line, so neither
+    // needs the deque history treatment.
+    pctRow("CPU", "cpu", "cpu_pct", s.cpu_pct, 50, 80, { cores: s.cpu_cores || [], top: s.top_cpu || [] });
+    pctRow("MEM", "mem", "mem_pct", s.mem_pct, 50, 80, { top: s.top_mem || [] });
+    pctRow("DISK", "disk", "disk_pct", s.disk_pct, 70, 90, { topFiles: s.top_disk_files || [] });
+    pctRow("GPU", "gpu", "gpu_pct", s.gpu_pct, 50, 80);   // no top list -- see server.py's note on why
     if (s.disk_io_mbs != null) {
       const v = s.disk_io_mbs;
       const level = v >= 50 ? "red" : v >= 10 ? "yellow" : "green";
-      out.push({ label: "DISK I/O", level, text: v.toFixed(1) + " MB/s",
+      out.push({ label: "DISK I/O", metric: "disk_io", level, text: v.toFixed(1) + " MB/s",
                 history: hist.disk_io_mbs || [], pctBased: false,
-                greenBelow: 10, yellowBelow: 50 });
+                greenBelow: 10, yellowBelow: 50, top: s.top_disk_io || [] });
     }
     if (s.net_kbs != null) {
       // Kevin's explicit ask: just two states for network, no middle
@@ -625,9 +636,9 @@ const AV = (() => {
       const level = s.net_kbs >= 200 ? "red" : "green";
       const text = s.net_kbs >= 1024
         ? (s.net_kbs / 1024).toFixed(1) + " MB/s" : Math.round(s.net_kbs) + " KB/s";
-      out.push({ label: "NET", level, text,
+      out.push({ label: "NET", metric: "net", level, text,
                 history: hist.net_kbs || [], pctBased: false,
-                greenBelow: 200, yellowBelow: null });
+                greenBelow: 200, yellowBelow: null, top: s.top_net || [] });
     }
     return out;
   };
