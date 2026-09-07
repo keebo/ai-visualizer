@@ -57,6 +57,13 @@
                    push-to-talk; a face's chat box replaces all three
      AV.model      "fast" | "deep" | "fable" | "haiku" — which model tier the
                    voice line reports live, "" if it doesn't publish it
+     AV.system     {cpu_pct, mem_pct, disk_pct, disk_io_mbs, net_kbs} from
+                   server.py's own background sampler, any field null
+                   until its first real sample lands. No GPU: live
+                   utilization needs sudo (powermetrics), not available
+                   from a background thread. AV.util.sysRows() below
+                   turns this into the same {label,level,text} shape
+                   usageRows() already provides for the token-usage rows.
      AV.setSilentMode(bool)  POSTs the new mode to /mode
      AV.sendTyped(text)  POSTs one typed line to /type, standing in for
                    a spoken push-to-talk turn while silent. Returns the
@@ -230,6 +237,10 @@ const AV = (() => {
     // "fast" | "deep" | "fable" | "haiku" per backtalk's console switches, "" when
     // the running backtalk predates model publishing.
     A.model = raw.model || "";
+    // CPU/memory/disk/network from server.py's own background sampler --
+    // not a browser-readable metric at all, so this is server-side only.
+    // GPU deliberately absent: live utilization needs sudo (powermetrics).
+    A.system = raw.system || {};
     A.note = (raw.note && (raw.note.text || noteChartPresent(raw.note.chart))) ? raw.note : null;
     A.activity = Array.isArray(raw.activity) ? raw.activity : [];
     A.transcript = Array.isArray(raw.transcript) ? raw.transcript : [];
@@ -564,6 +575,38 @@ const AV = (() => {
         hot: level === "red",
         text: (known ? pct + "%" : "\u2014") + (rel ? "  " + rel : "")
       });
+    }
+    return out;
+  };
+  // System resource rows (CPU/memory/disk/network), same shape and same
+  // "call unconditionally, draw nothing if empty" contract as usageRows.
+  // Thresholds differ per metric on purpose: a half-full disk is normal
+  // (so its green/yellow line sits higher than CPU/memory's), and disk
+  // I/O and network have no fixed 100%-of-capacity ceiling at all, so
+  // they're tiered on absolute throughput instead of a percentage.
+  U.sysRows = () => {
+    const s = A.system || {};
+    const out = [];
+    const pctRow = (label, pct, greenBelow, yellowBelow) => {
+      if (pct == null) return;
+      const level = pct >= yellowBelow ? "red" : pct >= greenBelow ? "yellow" : "green";
+      out.push({ label, level, text: Math.round(pct) + "%" });
+    };
+    pctRow("CPU", s.cpu_pct, 50, 80);
+    pctRow("MEM", s.mem_pct, 50, 80);
+    pctRow("DISK", s.disk_pct, 70, 90);
+    if (s.disk_io_mbs != null) {
+      const v = s.disk_io_mbs;
+      const level = v >= 50 ? "red" : v >= 10 ? "yellow" : "green";
+      out.push({ label: "DISK I/O", level, text: v.toFixed(1) + " MB/s" });
+    }
+    if (s.net_kbs != null) {
+      // Kevin's explicit ask: just two states for network, no middle
+      // tier -- quiet reads green, any real traffic reads red.
+      const level = s.net_kbs >= 200 ? "red" : "green";
+      const text = s.net_kbs >= 1024
+        ? (s.net_kbs / 1024).toFixed(1) + " MB/s" : Math.round(s.net_kbs) + " KB/s";
+      out.push({ label: "NET", level, text });
     }
     return out;
   };

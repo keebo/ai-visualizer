@@ -93,16 +93,18 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 <canvas id="stage"></canvas>
 <pre id="noteText"></pre>
 <div id="volCtl">
-  <div class="row"><span>THINK</span>
-    <button class="stepbtn" data-target="volThink" data-dir="-1">−</button>
-    <input type="range" id="volThink" min="0" max="1" step="0.01">
-    <button class="stepbtn" data-target="volThink" data-dir="1">+</button>
-    <span class="val" id="volThinkVal">--</span></div>
-  <div class="row"><span>VOICE</span>
-    <button class="stepbtn" data-target="volVoice" data-dir="-1">−</button>
-    <input type="range" id="volVoice" min="0" max="1" step="0.01">
-    <button class="stepbtn" data-target="volVoice" data-dir="1">+</button>
-    <span class="val" id="volVoiceVal">--</span></div>
+  <div id="volRows">
+    <div class="row"><span>THINK</span>
+      <button class="stepbtn" data-target="volThink" data-dir="-1">−</button>
+      <input type="range" id="volThink" min="0" max="1" step="0.01">
+      <button class="stepbtn" data-target="volThink" data-dir="1">+</button>
+      <span class="val" id="volThinkVal">--</span></div>
+    <div class="row"><span>VOICE</span>
+      <button class="stepbtn" data-target="volVoice" data-dir="-1">−</button>
+      <input type="range" id="volVoice" min="0" max="1" step="0.01">
+      <button class="stepbtn" data-target="volVoice" data-dir="1">+</button>
+      <span class="val" id="volVoiceVal">--</span></div>
+  </div>
   <div id="modelRow"><span>MODEL</span>
     <label><input type="radio" name="model" value="haiku">HAIKU</label>
     <label><input type="radio" name="model" value="fast">SONNET</label>
@@ -145,6 +147,7 @@ AV.ready(a=>{document.title=a.name+" Arc Reactor";});
 
 /* ---------------- volume sliders: backtalk's thinking-cue + TTS gain ---------------- */
 const volBox=document.getElementById("volCtl");
+const volRows=document.getElementById("volRows");
 const volThink=document.getElementById("volThink");
 const volVoice=document.getElementById("volVoice");
 const volThinkVal=document.getElementById("volThinkVal");
@@ -270,9 +273,15 @@ function syncSilentUI(){
       // leaving no visible way back (Kevin's report, 2026-09-06).
       modeBtn.textContent="⏻ RETURN TO VOICE";
       modeBtn.classList.add("silent");
+      // Both sliders are meaningless while silent -- no TTS to gain,
+      // no thinking cue to play -- so hide them, per Kevin's ask. The
+      // model radios and the toggle itself stay visible: the toggle is
+      // the only way back to voice mode.
+      volRows.style.display="none";
     }else{
       modeBtn.textContent="⏼ GO SILENT";
       modeBtn.classList.remove("silent");
+      volRows.style.display="";
     }
   }
   // Checked every frame (not just on mode flips) so closing the pop-out
@@ -539,6 +548,26 @@ function drawUsage(){
     const c=r.level==="red"?RED:r.level==="yellow"?AMBER:GREEN;
     ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`;
     ctx.fillText(`${r.label} ${r.text}`,W-18,y);
+    y+=fs+4;
+  }
+  ctx.restore();
+}
+// System resource widgets (CPU/memory/disk/network) -- Kevin's ask,
+// 2026-09-06, styled to match drawUsage() exactly (same font, same
+// green/yellow/red convention), mirrored to the top-left since
+// drawUsage already owns bottom-right and volCtl owns top-right.
+function drawSysStats(){
+  const rows=AV.util.sysRows();
+  if(!rows.length)return;
+  const fs=Math.round(Math.min(W,H)*.02);
+  ctx.save();
+  ctx.font=`${fs}px ${UI_FONT}`;
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  let y=fs+16;
+  for(const r of rows){
+    const c=r.level==="red"?RED:r.level==="yellow"?AMBER:GREEN;
+    ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`;
+    ctx.fillText(`${r.label} ${r.text}`,18,y);
     y+=fs+4;
   }
   ctx.restore();
@@ -1443,6 +1472,7 @@ function frame(dt){
   if(thinkingAmt>.2)drawThinking(dt,thinkingAmt);else thinkLabel=null;
   drawStateTag(dt,state,alert);
   drawUsage();
+  drawSysStats();
   computeRail();
   drawNotePanel(dt);
   drawTerminal(dt);

@@ -111,6 +111,8 @@ import json
 import math
 import mimetypes
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -214,6 +216,7 @@ def mock_bus():
             "voice_volume": _read_volume(".voice_volume", 1.0),
             "silent_mode": _read_silent_mode(),
             "model": "fast",
+            "system": read_sys_stats(),
             "source": MOCK_SOURCE, "note": {}, "activity": []}
 
 
@@ -261,6 +264,150 @@ def _background_job_active():
         return False
     except OSError:
         return False
+
+
+# --------------------------- system stats sampler ---------------------------
+# CPU/memory/disk/network for a face's own resource widgets. Kevin's ask,
+# 2026-09-06 -- GPU deliberately left out: live GPU utilization needs
+# `powermetrics`, which is sudo-gated on macOS and can't be run
+# unattended without a password prompt. Sampled on a background thread,
+# not per-request: `top -l 1` alone takes close to a second, and
+# `iostat -w 1` deliberately blocks for a real second to compute a rate
+# -- both far too slow for a poll hit ~8x/sec. Every command here is a
+# standard macOS CLI tool (no new Python dependency), consistent with
+# this file's own "Python standard library only" design.
+SYS_SAMPLE_S = 3.0
+_sys_lock = threading.Lock()
+_sys_stats = {"cpu_pct": None, "mem_pct": None, "disk_pct": None,
+              "disk_io_mbs": None, "net_kbs": None}
+_sys_prev_net = None   # (bytes_total, monotonic_ts), for a manual rate calc
+
+
+def _sys_cpu_pct():
+    try:
+        out = subprocess.run(["top", "-l", "1", "-n", "0"],
+                              capture_output=True, text=True,
+                              timeout=3).stdout
+        m = re.search(r"([\d.]+)% idle", out)
+        return round(100.0 - float(m.group(1)), 1) if m else None
+    except Exception:
+        return None
+
+
+def _sys_mem_pct():
+    # Approximates Activity Monitor's own notion of "used": everything
+    # that ISN'T immediately free or speculative (about-to-be-reclaimed
+    # cache), out of physical RAM. A rough gauge, not an exact accounting
+    # of wired/compressed/active -- good enough for a green/yellow/red
+    # widget, not meant to replace Activity Monitor.
+    try:
+        total = int(subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                    capture_output=True, text=True,
+                                    timeout=2).stdout.strip())
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True,
+                              timeout=2).stdout
+        m = re.search(r"page size of (\d+) bytes", out)
+        page_size = int(m.group(1)) if m else 4096
+        free = 0
+        for label in ("free", "speculative"):
+            mm = re.search(rf"Pages {label}:\s+(\d+)\.", out)
+            if mm:
+                free += int(mm.group(1))
+        used = total - free * page_size
+        return round(100.0 * used / total, 1)
+    except Exception:
+        return None
+
+
+def _sys_disk_pct():
+    try:
+        du = shutil.disk_usage("/")
+        return round(100.0 * du.used / du.total, 1)
+    except OSError:
+        return None
+
+
+def _sys_disk_io_mbs():
+    # iostat's own -w interval sampling does the rate math, so there's no
+    # manual delta to track here (unlike network below) -- the first row
+    # is the average since boot, the second is the real last-second
+    # sample, which is the one we want.
+    try:
+        out = subprocess.run(["iostat", "-d", "-c", "2", "-w", "1"],
+                              capture_output=True, text=True,
+                              timeout=4).stdout
+        rows = [ln.split() for ln in out.splitlines()
+                if ln.strip() and re.match(r"^\s*[\d.]+", ln)]
+        if len(rows) >= 2:
+            return round(float(rows[-1][-1]), 2)
+    except Exception:
+        pass
+    return None
+
+
+def _sys_default_iface():
+    try:
+        out = subprocess.run(["route", "get", "default"],
+                              capture_output=True, text=True,
+                              timeout=2).stdout
+        m = re.search(r"interface:\s*(\S+)", out)
+        return m.group(1) if m else "en0"
+    except Exception:
+        return "en0"
+
+
+def _sys_net_total_bytes(iface: str):
+    # The <Link#N> row is the authoritative per-interface total; the
+    # other rows for the same interface (one per address family) repeat
+    # the identical counters, so summing every match would double- or
+    # triple-count. The Address field is BLANK for an interface with no
+    # link-layer address (loopback) but POPULATED with a MAC for a real
+    # one (en0 etc.), which shifts every column after it right by one --
+    # a real bug caught by testing against this machine's actual en0
+    # line, not assumed from the loopback shape alone. Branch on the
+    # real field count instead of a fixed offset so both shapes parse
+    # correctly.
+    try:
+        out = subprocess.run(["netstat", "-ib"], capture_output=True,
+                              text=True, timeout=3).stdout
+        for line in out.splitlines():
+            f = line.split()
+            if len(f) >= 8 and f[0] == iface and f[2].startswith("<Link"):
+                if len(f) >= 11:      # has a MAC address field
+                    return int(f[6]) + int(f[9])
+                return int(f[5]) + int(f[8])   # no address field (loopback)
+    except Exception:
+        pass
+    return None
+
+
+def _sys_sample_loop():
+    global _sys_prev_net
+    iface = _sys_default_iface()
+    while True:
+        cpu = _sys_cpu_pct()
+        mem = _sys_mem_pct()
+        disk_pct = _sys_disk_pct()
+        disk_io = _sys_disk_io_mbs()
+        net_kbs = None
+        total = _sys_net_total_bytes(iface)
+        now = time.monotonic()
+        if total is not None:
+            if _sys_prev_net is not None:
+                prev_bytes, prev_t = _sys_prev_net
+                elapsed = now - prev_t
+                if elapsed > 0:
+                    net_kbs = round((total - prev_bytes) / elapsed / 1024, 1)
+            _sys_prev_net = (total, now)
+        with _sys_lock:
+            _sys_stats.update(cpu_pct=cpu, mem_pct=mem, disk_pct=disk_pct,
+                              disk_io_mbs=disk_io, net_kbs=net_kbs)
+        time.sleep(SYS_SAMPLE_S)
+
+
+def read_sys_stats() -> dict:
+    with _sys_lock:
+        return dict(_sys_stats)
 
 
 def read_bus():
@@ -355,6 +502,7 @@ def read_bus():
             "source": source,
             "thinking_volume": thinking_volume, "voice_volume": voice_volume,
             "silent_mode": silent_mode,
+            "system": read_sys_stats(),
             "note": note, "activity": activity, "transcript": transcript}
 
 
@@ -571,6 +719,7 @@ def open_visualizer(url):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=_sys_sample_loop, daemon=True).start()
     mode = f"MOCK={MOCK}" if MOCK else f"bus: {BUS}"
     root = f"http://127.0.0.1:{PORT}/"
     # The browser opens on the configured face; the gallery stays at "/" for switching.
