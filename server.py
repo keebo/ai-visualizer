@@ -119,6 +119,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 import urllib.request
 import errno
@@ -540,6 +541,92 @@ def _cal_day_events(date_str):
     return events
 
 
+# Rosa job queue, 2026-09-07 -- Kevin's ask: a widget where he hands Rosa
+# (backtalk's local model) a specific file or pasted text plus an
+# instruction, and gets the result back without a live conversation turn.
+# This file is the one shared hand-off point: this server only ever reads
+# and writes it on Kevin's behalf (submit, list, fetch a result) -- the
+# actual model call happens over in backtalk's own process (main.py's
+# _rosa_queue_loop), the same "backtalk owns every real file read/write,
+# Rosa never touches the filesystem herself" boundary every other Rosa
+# feature already follows. Known limitation, same category as the BTT
+# USB automation's "BTT must already be running" note: a job only
+# processes while backtalk itself is running, since nothing else is
+# watching this file. Revisit as a standalone poller only if that's ever
+# actually a problem in practice.
+ROSA_QUEUE_FILE = BUS / ".rosa_queue.json"
+ROSA_JOBS_SHOWN = 30
+
+
+def _rosa_read_queue() -> list:
+    try:
+        data = json.loads(ROSA_QUEUE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _rosa_write_queue(jobs: list):
+    ROSA_QUEUE_FILE.write_text(json.dumps(jobs), encoding="utf-8")
+
+
+def read_rosa_state() -> dict:
+    jobs = _rosa_read_queue()
+    # Newest first, capped -- a face shows recent activity, not a
+    # forever-growing history; the underlying file keeps everything.
+    return {"jobs": list(reversed(jobs))[:ROSA_JOBS_SHOWN]}
+
+
+def _rosa_result_text(job_id: str) -> str | None:
+    for job in _rosa_read_queue():
+        if job.get("id") == job_id and job.get("result_path"):
+            try:
+                return Path(job["result_path"]).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+    return None
+
+
+def _rosa_delete_result_file(job: dict):
+    # Kevin's explicit ask, 2026-09-07: clearing must actually delete the
+    # output file from disk, not just drop the queue entry and leave an
+    # orphaned .txt sitting in ~/Documents/Rosa/ forever.
+    path = job.get("result_path")
+    if path:
+        Path(path).unlink(missing_ok=True)
+
+
+def rosa_delete_job(job_id: str) -> bool:
+    jobs = _rosa_read_queue()
+    keep, found = [], False
+    for job in jobs:
+        if job.get("id") == job_id:
+            found = True
+            _rosa_delete_result_file(job)
+        else:
+            keep.append(job)
+    if found:
+        _rosa_write_queue(keep)
+    return found
+
+
+def rosa_clear_outbox() -> int:
+    # Only done/error jobs -- exactly what the outbox displays. A pending
+    # or running job is left untouched; "clear the outbox" should never
+    # be able to nuke work still in flight.
+    jobs = _rosa_read_queue()
+    keep, cleared = [], 0
+    for job in jobs:
+        if job.get("status") in ("done", "error"):
+            _rosa_delete_result_file(job)
+            cleared += 1
+        else:
+            keep.append(job)
+    _rosa_write_queue(keep)
+    return cleared
+
+
 def _sys_cpu_pct():
     try:
         out = subprocess.run(["top", "-l", "1", "-n", "0"],
@@ -786,6 +873,7 @@ def read_bus():
             "thinking_volume": thinking_volume, "voice_volume": voice_volume,
             "silent_mode": silent_mode,
             "system": read_sys_stats(), "calendar": read_cal_state(),
+            "rosa": read_rosa_state(),
             "note": note, "activity": activity, "transcript": transcript}
 
 
@@ -816,6 +904,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._type()
             elif path == "/calendar_selection":
                 self._calendar_selection()
+            elif path == "/rosa_submit":
+                self._rosa_submit()
+            elif path == "/rosa_delete":
+                self._rosa_delete()
+            elif path == "/rosa_clear":
+                self._rosa_clear()
+            elif path == "/choose_file":
+                self._choose_file()
+            elif path == "/mic_primed":
+                self._mic_primed()
             else:
                 self._send(b"not found", "text/plain", 404)
         except ConnectionError:
@@ -874,6 +972,20 @@ class Handler(BaseHTTPRequestHandler):
         (BUS / filename).write_text(f"{value:.3f}")
         self._send(json.dumps({"ok": True, "kind": kind, "value": value}).encode(),
                    "application/json")
+
+    def _mic_primed(self):
+        # core.js's micPrime() calls this the instant it's done grabbing
+        # and releasing the mic on page load. Exists so "Talk to Cipher"
+        # (streamdeck_talk_to_cipher.sh) can wait for the REAL condition
+        # -- mic priming actually finished, macOS's output-ducking window
+        # for it actually closed -- instead of guessing a fixed sleep
+        # long enough to outlast it. Confirmed live 2026-09-08: a fixed
+        # delay isn't reliable once page-load itself is slow under system
+        # load, and this exact mic-hold mechanism was already confirmed
+        # (2026-09-06, a different symptom) to duck backtalk's own output
+        # volume for as long as anything holds an open mic stream.
+        (BUS / ".mic_primed").write_text(str(time.time()))
+        self._send(json.dumps({"ok": True}).encode(), "application/json")
 
     def _mode(self):
         # Silent/Voice toggle -- backtalk's is_silent_mode() reads this
@@ -940,6 +1052,100 @@ class Handler(BaseHTTPRequestHandler):
         self._send(json.dumps({"ok": True, "selected": pks}).encode(),
                    "application/json")
 
+    ROSA_SUBMIT_MAX = 4000
+
+    def _rosa_submit(self):
+        # Queues a job for backtalk's own _rosa_queue_loop to pick up --
+        # this process never calls the model itself, it only writes the
+        # request. At least one of file_path/text, plus a non-empty
+        # instruction. file_path is read directly off disk by backtalk
+        # (same local-machine trust level as everything else here, e.g.
+        # the calendar widget reading Spark's db straight off disk).
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0 or length > self.ROSA_SUBMIT_MAX:
+            self._send(json.dumps({"error": "bad length"}).encode(),
+                       "application/json", 400)
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+            instruction = str(body.get("instruction", "")).strip()
+            file_path = str(body.get("file_path", "")).strip()
+            text = str(body.get("text", "")).strip()
+        except (ValueError, TypeError):
+            self._send(json.dumps({"error": "bad body"}).encode(),
+                       "application/json", 400)
+            return
+        if not instruction or not (file_path or text):
+            self._send(json.dumps(
+                {"error": "instruction and (file_path or text) required"}
+            ).encode(), "application/json", 400)
+            return
+        job = {"id": uuid.uuid4().hex[:8], "instruction": instruction,
+               "file_path": file_path or None, "text": text or None,
+               "status": "pending", "created_at": time.time(),
+               "result_path": None, "error": None}
+        jobs = _rosa_read_queue()
+        jobs.append(job)
+        _rosa_write_queue(jobs)
+        self._send(json.dumps({"ok": True, "id": job["id"]}).encode(),
+                   "application/json")
+
+    def _rosa_delete(self):
+        # Deletes one job's queue entry AND its output file on disk, if
+        # it has one -- Kevin's explicit ask, 2026-09-07: a cleared entry
+        # must never leave an orphaned .txt behind in ~/Documents/Rosa/.
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+            job_id = str(body.get("id", "")).strip()
+        except (ValueError, TypeError):
+            self._send(json.dumps({"error": "bad body"}).encode(),
+                       "application/json", 400)
+            return
+        if not job_id:
+            self._send(json.dumps({"error": "id required"}).encode(),
+                       "application/json", 400)
+            return
+        found = rosa_delete_job(job_id)
+        self._send(json.dumps({"ok": found}).encode(), "application/json")
+
+    def _rosa_clear(self):
+        # Clears every done/error job (what the outbox actually shows)
+        # and deletes each one's output file from disk -- pending/running
+        # jobs are left alone, "clear the outbox" should never touch work
+        # still in flight.
+        cleared = rosa_clear_outbox()
+        self._send(json.dumps({"ok": True, "cleared": cleared}).encode(),
+                   "application/json")
+
+    def _choose_file(self):
+        # A real native Finder "choose file" dialog -- the browser's own
+        # <input type=file> deliberately never exposes an absolute path
+        # (a universal browser security restriction, not something any
+        # amount of JS can work around), but this server IS a plain local
+        # Python process on Kevin's own Mac with full OS access, same
+        # trust level as every other subprocess call in this file. Kevin's
+        # ask, 2026-09-07: clicking the Rosa queue's file-path field
+        # should pull up Finder, not require typing a path by hand.
+        # Blocks this ONE request's thread while the dialog is open --
+        # fine, ThreadingHTTPServer gives every request its own thread,
+        # so /state polling elsewhere is untouched.
+        try:
+            result = subprocess.run(
+                ["osascript", "-e",
+                 'POSIX path of (choose file with prompt '
+                 '"Choose a file for Rosa to process")'],
+                capture_output=True, text=True, timeout=300)
+        except Exception:
+            self._send(json.dumps({"ok": False}).encode(), "application/json")
+            return
+        if result.returncode != 0:
+            # Cancel button, or the dialog errored -- either way, no path.
+            self._send(json.dumps({"ok": False}).encode(), "application/json")
+            return
+        self._send(json.dumps({"ok": True, "path": result.stdout.strip()}).encode(),
+                   "application/json")
+
     def do_GET(self):
         path = self.path.split("?")[0]
         try:
@@ -959,6 +1165,12 @@ class Handler(BaseHTTPRequestHandler):
                 events = _cal_day_events(date_str) if date_str else []
                 self._send(json.dumps({"date": date_str,
                                        "events": events}).encode(),
+                           "application/json")
+            elif path == "/rosa_result":
+                job_id = (parse_qs(urlparse(self.path).query).get("id")
+                          or [""])[0]
+                text = _rosa_result_text(job_id) if job_id else None
+                self._send(json.dumps({"id": job_id, "text": text}).encode(),
                            "application/json")
             else:
                 self._static(path)

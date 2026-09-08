@@ -74,6 +74,21 @@
                    knows about (for a picker); events is the next 3
                    upcoming across whichever pks are in `selected`, empty
                    until a face POSTs a selection to /calendar_selection
+     AV.rosa       {jobs:[{id,instruction,file_path,text,status,
+                   created_at,result_path,error}]} — the Rosa job queue,
+                   newest first, capped to the most recent 30. status is
+                   pending|running|done|error. A.submitRosaJob(job) queues
+                   a new one; A.fetchRosaResult(id) is a one-shot lookup
+                   for a done job's full output text (not carried in
+                   AV.rosa.jobs itself, which is metadata only)
+     AV.chooseFile()  opens a real native Finder "choose file" dialog
+                   server-side, resolves {ok, path} once Kevin picks a
+                   file or cancels
+     AV.deleteRosaJob(id)  deletes one job's queue entry and its output
+                   file on disk, resolves {ok}
+     AV.clearRosaOutbox()  deletes every done/error job and each one's
+                   output file (pending/running untouched), resolves
+                   {ok, cleared}
      AV.setSilentMode(bool)  POSTs the new mode to /mode
      AV.sendTyped(text)  POSTs one typed line to /type, standing in for
                    a spoken push-to-talk turn while silent. Returns the
@@ -252,6 +267,7 @@ const AV = (() => {
     // GPU deliberately absent: live utilization needs sudo (powermetrics).
     A.system = raw.system || {};
     A.calendar = raw.calendar || {};
+    A.rosa = raw.rosa || {};
     A.note = (raw.note && (raw.note.text || noteChartPresent(raw.note.chart))) ? raw.note : null;
     A.activity = Array.isArray(raw.activity) ? raw.activity : [];
     A.transcript = Array.isArray(raw.transcript) ? raw.transcript : [];
@@ -356,6 +372,13 @@ const AV = (() => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(t => t.stop());
     } catch (e) { /* no permission: micStart() will also fail silently later */ }
+    // Signal completion either way (success or the catch above) -- a
+    // caller waiting on this (streamdeck_talk_to_cipher.sh) needs to
+    // know priming is DONE, not that it specifically succeeded. Best
+    // effort: if the server isn't reachable yet this just no-ops.
+    try {
+      fetch(new URL("mic_primed", ROOT).href, { method: "POST" });
+    } catch (e) { /* best effort */ }
   }
 
   /* ----------------------------- thinking sound ---------------------------- */
@@ -522,6 +545,53 @@ const AV = (() => {
       .then(r => r.json());
   };
 
+  // Queues a job for backtalk's Rosa to process (2026-09-07, Kevin's
+  // ask): give her a specific file or pasted text plus an instruction,
+  // no live conversation turn needed. `job` is {instruction, file_path,
+  // text} -- at least one of file_path/text is required server-side.
+  A.submitRosaJob = (job) => {
+    return fetch(new URL("rosa_submit", ROOT).href, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(job),
+    }).then(r => r.json());
+  };
+
+  // One-shot lookup for a completed job's full output text -- not part
+  // of AV.rosa.jobs (which only carries status/metadata), so the outbox
+  // pop-out calls this on demand when a job is opened.
+  A.fetchRosaResult = (id) => {
+    return fetch(new URL("rosa_result?id=" + encodeURIComponent(id), ROOT).href)
+      .then(r => r.json());
+  };
+
+  // Deletes one job's queue entry AND its output file on disk (Kevin's
+  // ask, 2026-09-07: no orphaned files left behind in ~/Documents/Rosa/).
+  A.deleteRosaJob = (id) => {
+    return fetch(new URL("rosa_delete", ROOT).href, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).then(r => r.json());
+  };
+
+  // Clears every done/error job and deletes each one's output file --
+  // pending/running jobs are left untouched.
+  A.clearRosaOutbox = () => {
+    return fetch(new URL("rosa_clear", ROOT).href, { method: "POST" })
+      .then(r => r.json());
+  };
+
+  // Opens a real native Finder "choose file" dialog server-side (Kevin's
+  // ask, 2026-09-07: clicking the queue's file-path field should pull up
+  // Finder, not require typing a path). Resolves {ok, path}; the request
+  // hangs until Kevin picks a file or cancels, so callers should disable
+  // their own UI while it's in flight rather than assume a fast reply.
+  A.chooseFile = () => {
+    return fetch(new URL("choose_file", ROOT).href, {method: "POST"})
+      .then(r => r.json());
+  };
+
   /* ------------------------------ shot harness ----------------------------- */
   // Runs the face's frame() deterministically (a synchronous burst of t ms).
   // A headless browser resizes the window and finishes loading images AFTER
@@ -592,7 +662,8 @@ const AV = (() => {
   U.usageRows = () => {
     const rl = A.rateLimits || {};
     const out = [];
-    for (const [label, w] of [["5H", rl.five_hour], ["7D", rl.seven_day]]) {
+    for (const [label, w] of [["5H", rl.five_hour], ["7D", rl.seven_day],
+                              ["FABLE", rl.fable]]) {
       if (!w) continue;
       const known = w.utilization != null;
       const pct = known ? Math.round(w.utilization * 100) : null;

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<!--
+ai-visualizer: give your AI agent a face.
+Copyright (C) 2026 Jared Rhodenizer
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rosa Outbox</title>
+<style>
+  @font-face{font-family:"Orbitron";src:url("../../assets/Orbitron-Variable.ttf")}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;background:#01050a;overflow:hidden;
+    font-family:"Orbitron",sans-serif;color:#e8f3f7}
+  #hdr{padding:16px 20px 10px;font-size:14px;letter-spacing:.14em;
+    opacity:.85;border-bottom:1px solid rgba(90,225,255,.25);
+    display:flex;justify-content:space-between;align-items:center}
+  #clear-btn{flex:none;background:rgba(255,60,50,.1);border:1px solid rgba(255,60,50,.4);
+    color:#ff3c32;font-family:"Orbitron",sans-serif;font-size:10px;letter-spacing:.06em;
+    padding:5px 12px;border-radius:5px;cursor:pointer}
+  #clear-btn:hover{background:rgba(255,60,50,.2)}
+  #wrap{display:flex;height:calc(100% - 46px)}
+  #list{width:38%;overflow-y:auto;border-right:1px solid rgba(90,225,255,.15)}
+  #list::-webkit-scrollbar{width:7px}
+  #list::-webkit-scrollbar-thumb{background:rgba(90,225,255,.25);border-radius:4px}
+  .row{padding:10px 12px;border-bottom:1px solid rgba(90,225,255,.08);
+    cursor:pointer;display:flex;align-items:flex-start;justify-content:space-between;gap:6px}
+  .row:hover{background:rgba(90,225,255,.08)}
+  .row.sel{background:rgba(90,225,255,.14)}
+  .row-main{flex:1;min-width:0}
+  .del-btn{flex:none;background:transparent;border:none;color:#ff3c32;opacity:.45;
+    font-size:15px;line-height:1;cursor:pointer;padding:2px 4px}
+  .del-btn:hover{opacity:1}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+  .instr{font-size:12px;display:inline}
+  .meta{font-size:10px;opacity:.5;margin-top:3px}
+  #detail{flex:1;padding:14px 16px;overflow-y:auto;font-size:12px;
+    line-height:1.6;white-space:pre-wrap}
+  #detail::-webkit-scrollbar{width:7px}
+  #detail::-webkit-scrollbar-thumb{background:rgba(90,225,255,.25);border-radius:4px}
+  #empty{padding:20px;opacity:.5;font-size:12px}
+  .detail-header{display:flex;justify-content:space-between;align-items:flex-start;
+    gap:10px;margin-bottom:10px}
+  .src{font-size:10px;opacity:.45;word-break:break-all}
+  .copy-btn{flex:none;background:rgba(90,225,255,.1);border:1px solid rgba(90,225,255,.4);
+    color:#5ae1ff;font-family:"Orbitron",sans-serif;font-size:10px;letter-spacing:.06em;
+    padding:4px 10px;border-radius:5px;cursor:pointer}
+  .copy-btn:hover{background:rgba(90,225,255,.2)}
+  .copy-btn.copied{color:#3ddc84;border-color:rgba(61,220,132,.5)}
+</style>
+</head>
+<body>
+<div id="hdr"><span>ROSA OUTBOX</span><button id="clear-btn">CLEAR ALL</button></div>
+<div id="wrap">
+  <div id="list"><div id="empty">No completed jobs yet.</div></div>
+  <div id="detail"><div id="empty">Select a job to view its output.</div></div>
+</div>
+<script src="../../core.js"></script>
+<script>
+"use strict";
+// sound:false -- same reasoning as every other Rosa/calendar pop-out
+// here: a browse-and-read window, never its own thinking cue.
+AV.init({sound:false});
+AV.ready(a => { document.title = "Rosa Outbox — " + (a.name || "Cipher"); });
+
+const STATUS_COLOR = {done:"#3ddc84", error:"#ff3c32"};
+const listEl = document.getElementById("list");
+const detailEl = document.getElementById("detail");
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+let selectedId = null;
+let renderedIds = "";  // dedupe key so a selected row's click handler
+                       // isn't rebuilt (and lose the .sel highlight)
+                       // on every single tick for no reason.
+
+// Kevin's ask, 2026-09-07: a copy button so Rosa's output can go
+// straight to the clipboard instead of a manual select-and-copy. Held
+// in one shared variable rather than re-read from the DOM at click
+// time, since the displayed text is HTML-escaped for safe rendering
+// but the clipboard should get the real raw string.
+let currentText = "";
+
+function fmtTime(ts) {
+  return new Date(ts*1000).toLocaleString();
+}
+
+function headerHtml(job, showCopy) {
+  const copyBtn = showCopy ? '<button class="copy-btn">COPY</button>' : "";
+  return `<div class="detail-header"><div class="src">${esc(job.file_path || "(pasted text)")} · ${esc(fmtTime(job.created_at))}</div>${copyBtn}</div>`;
+}
+
+function selectJob(job) {
+  selectedId = job.id;
+  [...listEl.querySelectorAll(".row")].forEach(r =>
+    r.classList.toggle("sel", r.dataset.id === job.id));
+  if (job.status === "error") {
+    currentText = job.error || "Unknown error.";
+    detailEl.innerHTML = headerHtml(job, true)
+      + `<div style="color:#ff3c32">${esc(currentText)}</div>`;
+    return;
+  }
+  currentText = "";
+  detailEl.innerHTML = headerHtml(job, false) + "Loading…";
+  AV.fetchRosaResult(job.id).then(res => {
+    if (selectedId !== job.id) return;   // a later click won since this landed
+    currentText = (res && res.text) || "(empty output)";
+    detailEl.innerHTML = headerHtml(job, true) + esc(currentText);
+  }).catch(() => {
+    if (selectedId !== job.id) return;
+    detailEl.innerHTML = "Could not load result.";
+  });
+}
+
+// Event delegation, not a per-render listener: the copy button gets
+// torn down and rebuilt by innerHTML on every job selection, so one
+// listener bound to the stable parent (and reading the shared
+// currentText at click time) is simpler than rebinding after every
+// render.
+detailEl.addEventListener("click", e => {
+  const btn = e.target.closest(".copy-btn");
+  if (!btn) return;
+  navigator.clipboard.writeText(currentText).then(() => {
+    const prior = btn.textContent;
+    btn.textContent = "COPIED";
+    btn.classList.add("copied");
+    setTimeout(() => { btn.textContent = prior; btn.classList.remove("copied"); }, 1200);
+  }).catch(() => {
+    btn.textContent = "FAILED";
+    setTimeout(() => { btn.textContent = "COPY"; }, 1200);
+  });
+});
+
+function clearDetailIfSelected(id) {
+  if (selectedId !== id) return;
+  selectedId = null;
+  currentText = "";
+  detailEl.innerHTML = '<div id="empty">Select a job to view its output.</div>';
+}
+
+function deleteJob(id) {
+  if (!confirm("Delete this job and its output file? This can't be undone.")) return;
+  AV.deleteRosaJob(id).then(() => {
+    clearDetailIfSelected(id);
+    renderedIds = "";  // force the next tick to rebuild the list immediately
+  });
+}
+
+document.getElementById("clear-btn").addEventListener("click", () => {
+  if (!confirm("Clear the whole outbox? Every finished job's output file will be deleted from disk. This can't be undone.")) return;
+  AV.clearRosaOutbox().then(() => {
+    selectedId = null;
+    currentText = "";
+    detailEl.innerHTML = '<div id="empty">Select a job to view its output.</div>';
+    renderedIds = "";
+  });
+});
+
+function render() {
+  const jobs = ((AV.rosa && AV.rosa.jobs) || [])
+    .filter(j => j.status === "done" || j.status === "error");
+  const key = jobs.map(j => j.id + j.status).join(",");
+  if (key === renderedIds) return;   // nothing new -- don't clobber selection/scroll
+  renderedIds = key;
+  if (!jobs.length) {
+    listEl.innerHTML = '<div id="empty">No completed jobs yet.</div>';
+    return;
+  }
+  listEl.innerHTML = jobs.map(j => `
+    <div class="row${j.id===selectedId?" sel":""}" data-id="${j.id}">
+      <div class="row-main">
+        <span class="dot" style="background:${STATUS_COLOR[j.status]}"></span>
+        <span class="instr">${esc(j.instruction)}</span>
+        <div class="meta">${esc(fmtTime(j.created_at))}</div>
+      </div>
+      <button class="del-btn" data-id="${j.id}" title="Delete">×</button>
+    </div>`).join("");
+  for (const row of listEl.querySelectorAll(".row")) {
+    const job = jobs.find(j => j.id === row.dataset.id);
+    row.addEventListener("click", () => selectJob(job));
+  }
+  for (const btn of listEl.querySelectorAll(".del-btn")) {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();   // never also trigger the row's own select handler
+      deleteJob(btn.dataset.id);
+    });
+  }
+}
+
+let lastT = performance.now();
+function tick() {
+  const now = performance.now();
+  const dt = Math.min(2000, now - lastT); lastT = now;
+  AV.tick(dt);
+  render();
+}
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

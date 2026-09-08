@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<!--
+ai-visualizer: give your AI agent a face.
+Copyright (C) 2026 Jared Rhodenizer
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rosa Queue</title>
+<style>
+  @font-face{font-family:"Orbitron";src:url("../../assets/Orbitron-Variable.ttf")}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;background:#01050a;overflow:hidden;
+    font-family:"Orbitron",sans-serif;color:#e8f3f7}
+  #hdr{padding:16px 20px 10px;font-size:14px;letter-spacing:.14em;
+    opacity:.85;border-bottom:1px solid rgba(90,225,255,.25)}
+  #form{padding:12px 16px;border-bottom:1px solid rgba(90,225,255,.15);
+    display:flex;flex-direction:column;gap:8px}
+  #form label{font-size:10px;opacity:.55;letter-spacing:.08em}
+  #form input,#form textarea{background:rgba(90,225,255,.06);
+    border:1px solid rgba(90,225,255,.25);border-radius:5px;color:#e8f3f7;
+    font-family:"Orbitron",sans-serif;font-size:12px;padding:7px 9px;
+    resize:none}
+  #form textarea{min-height:52px}
+  #fpath{cursor:pointer}
+  #fpath.busy{opacity:.5;cursor:wait}
+  #form input:focus,#form textarea:focus{outline:none;
+    border-color:rgba(90,225,255,.6)}
+  #submit{align-self:flex-end;background:rgba(90,225,255,.16);
+    border:1px solid rgba(90,225,255,.5);color:#5ae1ff;border-radius:6px;
+    font-family:"Orbitron",sans-serif;font-size:11px;letter-spacing:.08em;
+    padding:6px 16px;cursor:pointer}
+  #submit:hover{background:rgba(90,225,255,.28)}
+  #submit:disabled{opacity:.4;cursor:default}
+  #err{font-size:11px;color:#ff3c32;min-height:14px}
+  #list{padding:8px 10px;overflow-y:auto;height:calc(100% - 226px)}
+  #list::-webkit-scrollbar{width:7px}
+  #list::-webkit-scrollbar-thumb{background:rgba(90,225,255,.25);border-radius:4px}
+  .row{display:flex;align-items:center;gap:10px;padding:8px 6px;
+    border-bottom:1px solid rgba(90,225,255,.08)}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .body{flex:1;min-width:0}
+  .instr{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .meta{font-size:10px;opacity:.5;margin-top:2px}
+  #empty{padding:20px;opacity:.5;font-size:12px}
+</style>
+</head>
+<body>
+<div id="hdr">ROSA QUEUE</div>
+<div id="form">
+  <label>INSTRUCTION</label>
+  <input id="instr" type="text" placeholder="e.g. Summarize this in 3 bullet points">
+  <label>FILE PATH (optional — click to choose)</label>
+  <input id="fpath" type="text" readonly placeholder="Click to choose a file…">
+  <label>OR PASTE TEXT (optional)</label>
+  <textarea id="ptext" placeholder="Paste text here instead of a file path"></textarea>
+  <div id="err"></div>
+  <button id="submit">SUBMIT</button>
+</div>
+<div id="list"><div id="empty">No jobs yet.</div></div>
+<script src="../../core.js"></script>
+<script>
+"use strict";
+// sound:false -- this window only ever shows a form and a status list,
+// same reasoning as cal-picker.html/chat.html.
+AV.init({sound:false});
+AV.ready(a => { document.title = "Rosa Queue — " + (a.name || "Cipher"); });
+
+const STATUS_COLOR = {pending:"#ffb446", running:"#5ae1ff",
+                      done:"#3ddc84", error:"#ff3c32"};
+const instrEl = document.getElementById("instr");
+const fpathEl = document.getElementById("fpath");
+const ptextEl = document.getElementById("ptext");
+const errEl = document.getElementById("err");
+const submitEl = document.getElementById("submit");
+const listEl = document.getElementById("list");
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+// Clicking the field opens a real native Finder dialog (server-side --
+// see server.py's /choose_file) rather than typing a path by hand.
+// readonly on the input itself blocks the keyboard cursor so this is
+// the field's only way to get a value, avoiding an ambiguous "did they
+// click to browse or click to edit" state.
+fpathEl.addEventListener("click", () => {
+  if (fpathEl.classList.contains("busy")) return;
+  fpathEl.classList.add("busy");
+  const prior = fpathEl.placeholder;
+  fpathEl.placeholder = "Waiting on Finder…";
+  AV.chooseFile().then(res => {
+    fpathEl.classList.remove("busy");
+    fpathEl.placeholder = prior;
+    if (res && res.ok && res.path) fpathEl.value = res.path;
+  }).catch(() => {
+    fpathEl.classList.remove("busy");
+    fpathEl.placeholder = prior;
+  });
+});
+
+submitEl.addEventListener("click", () => {
+  const instruction = instrEl.value.trim();
+  const file_path = fpathEl.value.trim();
+  const text = ptextEl.value.trim();
+  if (!instruction) { errEl.textContent = "Instruction is required."; return; }
+  if (!file_path && !text) { errEl.textContent = "Give a file path or paste text."; return; }
+  errEl.textContent = "";
+  submitEl.disabled = true;
+  AV.submitRosaJob({instruction, file_path, text}).then(res => {
+    submitEl.disabled = false;
+    if (res && res.ok) {
+      instrEl.value = ""; fpathEl.value = ""; ptextEl.value = "";
+    } else {
+      errEl.textContent = (res && res.error) || "Submit failed.";
+    }
+  }).catch(() => {
+    submitEl.disabled = false;
+    errEl.textContent = "Submit failed.";
+  });
+});
+
+function fmtAge(ts) {
+  const s = Math.max(0, Math.round(Date.now()/1000 - ts));
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.round(s/60) + "m ago";
+  return Math.round(s/3600) + "h ago";
+}
+
+function render() {
+  const jobs = (AV.rosa && AV.rosa.jobs) || [];
+  if (!jobs.length) {
+    listEl.innerHTML = '<div id="empty">No jobs yet.</div>';
+    return;
+  }
+  listEl.innerHTML = jobs.map(j => `
+    <div class="row">
+      <div class="dot" style="background:${STATUS_COLOR[j.status]||"#888"}"></div>
+      <div class="body">
+        <div class="instr">${esc(j.instruction)}</div>
+        <div class="meta">${j.status.toUpperCase()} · ${fmtAge(j.created_at)}${
+          j.status==="error" && j.error ? " · " + esc(j.error) : ""}</div>
+      </div>
+    </div>`).join("");
+}
+
+let lastT = performance.now();
+function tick() {
+  const now = performance.now();
+  const dt = Math.min(2000, now - lastT); lastT = now;
+  AV.tick(dt);
+  render();
+}
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

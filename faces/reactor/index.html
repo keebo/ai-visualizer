@@ -532,9 +532,17 @@ function drawStateTag(dt,state,alert){
   const key=name+"//"+label;
   if(key!==tagState){tagState=key;stateTag=new D(`${name} // ${label}`,40);}
   const fs=Math.round(Math.min(W,H)*.026);
-  ctx.font=`${fs}px ${UI_FONT}`;ctx.textBaseline="alphabetic";
+  ctx.font=`${fs}px ${UI_FONT}`;
+  // Moved under the top-center name, off the bottom-left corner --
+  // Kevin's ask, 2026-09-07, to clear that corner for the new Rosa
+  // job-queue/outbox icon cluster. Sits right below drawTitle()'s own
+  // text, same centered alignment, same top-baseline math so the two
+  // stack predictably regardless of title font size.
+  const titleFs=Math.round(Math.min(W,H)*.058);
+  ctx.textAlign="center";ctx.textBaseline="top";
   ctx.fillStyle=alert?`rgb(${RED[0]},${RED[1]},${RED[2]})`:`rgb(${CYAN[0]*.6|0},${CYAN[1]*.6|0},${CYAN[2]*.6|0})`;
-  ctx.fillText(stateTag.render(dt),18,H-16);
+  ctx.fillText(stateTag.render(dt),cx,20+titleFs+6);
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
 }
 function drawUsage(){
   const rows=AV.util.usageRows();
@@ -1427,6 +1435,120 @@ function openCalPicker(){
   const w=window.open("cal-picker.html","calpicker","width=420,height=560");
   if(w)w.focus();
 }
+function queueIcon(x,y,s,alpha){
+  // a "+" in a box -- the "hand Rosa a new job" glyph, same stroke
+  // style as pickerIcon/chartIcon.
+  const h=s/2;
+  ctx.save();
+  ctx.strokeStyle=`rgba(${alpha})`;
+  ctx.lineWidth=Math.max(1.3,s*.14);
+  ctx.lineCap="round";ctx.lineJoin="round";
+  ctx.strokeRect(x-h,y-h,s,s);
+  ctx.beginPath();
+  ctx.moveTo(x,y-h*.5);ctx.lineTo(x,y+h*.5);
+  ctx.moveTo(x-h*.5,y);ctx.lineTo(x+h*.5,y);
+  ctx.stroke();
+  ctx.restore();
+}
+function outboxIcon(x,y,s,alpha){
+  // an open-top tray with an arrow lifting out of it -- "results are
+  // ready to collect", a deliberately different silhouette from
+  // queueIcon's plus-in-a-box so the two read as different actions.
+  const h=s/2;
+  ctx.save();
+  ctx.strokeStyle=`rgba(${alpha})`;
+  ctx.lineWidth=Math.max(1.3,s*.14);
+  ctx.lineCap="round";ctx.lineJoin="round";
+  ctx.beginPath();
+  ctx.moveTo(x-h,y+h*.1);ctx.lineTo(x-h,y+h);ctx.lineTo(x+h,y+h);ctx.lineTo(x+h,y+h*.1);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x,y+h*.35);ctx.lineTo(x,y-h*.7);
+  ctx.moveTo(x-h*.35,y-h*.35);ctx.lineTo(x,y-h*.7);ctx.lineTo(x+h*.35,y-h*.35);
+  ctx.stroke();
+  ctx.restore();
+}
+function openRosaQueue(){
+  const w=window.open("rosa-queue.html","rosaqueue","width=420,height=560");
+  if(w)w.focus();
+}
+function openRosaOutbox(){
+  const w=window.open("rosa-outbox.html","rosaoutbox","width=560,height=460");
+  if(w)w.focus();
+}
+let rosaQueueBox=null,rosaOutboxBox=null,rosaClusterTop=0;
+function drawQStatus(x,y,fs){
+  // Kevin's ask, 2026-09-07: a glanceable strip -- pending/running/done/
+  // error counts -- so he can tell Rosa's actually chewing on something
+  // without opening either pop-out window. Pure client-side tally over
+  // AV.rosa.jobs, no new backend needed: the data's already polled.
+  // Only drawn when there's at least one job on file (checked by the
+  // caller), same "call unconditionally, draw nothing if empty" spirit
+  // as usageRows()/sysRows().
+  const jobs=(AV.rosa&&AV.rosa.jobs)||[];
+  const counts={pending:0,running:0,done:0,error:0};
+  for(const j of jobs)if(counts.hasOwnProperty(j.status))counts[j.status]++;
+  const groups=[["PENDING",counts.pending,AMBER],["RUNNING",counts.running,CYAN],
+                ["DONE",counts.done,GREEN],["ERROR",counts.error,RED]];
+  ctx.font=`${fs}px ${UI_FONT}`;
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  const dotR=fs*.28;
+  let cx=x;
+  for(const [label,n,color] of groups){
+    const cy=y-fs*.32;
+    ctx.beginPath();ctx.arc(cx+dotR,cy,dotR,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${color[0]},${color[1]},${color[2]},${n?".95":".35"})`;
+    ctx.fill();
+    cx+=dotR*2+fs*.35;
+    ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},${n?".85":".4"})`;
+    const text=`${label} ${n}`;
+    ctx.fillText(text,cx,y);
+    cx+=ctx.measureText(text).width+fs*.9;
+  }
+}
+function drawRosaCluster(){
+  // Bottom-left corner -- freed up 2026-09-07 when drawStateTag() moved
+  // under the top-center name specifically to make room for this.
+  // Mirrors the usage-credit corner's visual weight on the opposite
+  // (bottom-right) side of the screen.
+  const pad=18;
+  const labelFs=Math.round(Math.min(W,H)*.02);
+  const iconS=Math.round(labelFs*.95);
+  const gap=Math.round(labelFs*.7);
+  // Yields to the chat bar's real measured top edge, same live-rect
+  // pattern computeRail() already uses for the Note/Calendar rail --
+  // Kevin caught the (horizontally-centered) bar overlaying this
+  // (bottom-left) cluster on a real narrower-window test, 2026-09-07.
+  // A hardcoded pixel bump would only have papered over one window
+  // size; this holds at any width the bar happens to overlap at.
+  const barRect=chatBar.classList.contains("show")?chatBar.getBoundingClientRect():null;
+  const y=barRect?Math.min(H-16,Math.round(barRect.top-labelFs*.9)):H-16;
+  // Reserved unconditionally at the Q-STATUS strip's worst-case height
+  // (as if it were always shown), not just when a job is actually on
+  // file -- so the Calendar panel below (which reads this to avoid
+  // overlapping) gets a STABLE ceiling that doesn't jitter every time a
+  // job starts/finishes. Read by drawCalendarPanel(), which runs later
+  // this same frame (drawRosaCluster() is called first in frame()), so
+  // there's no one-frame lag the way sysStatsBottom has for its own
+  // late-in-frame consumer.
+  rosaClusterTop=y-Math.round(labelFs*1.6)-labelFs;
+  ctx.save();
+  const jobs=(AV.rosa&&AV.rosa.jobs)||[];
+  if(jobs.length)drawQStatus(pad,y-Math.round(labelFs*1.6),Math.round(labelFs*.85));
+  ctx.font=`${labelFs}px ${UI_FONT}`;
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.6)`;
+  ctx.fillText("ROSA",pad,y);
+  const labelW=ctx.measureText("ROSA").width;
+  const qcx=pad+labelW+gap+iconS/2;
+  const ocx=qcx+iconS+gap;
+  const iy=y-labelFs*.36;
+  queueIcon(qcx,iy,iconS,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.75`);
+  outboxIcon(ocx,iy,iconS,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.75`);
+  rosaQueueBox={x:qcx-iconS,y:iy-iconS,w:iconS*2,h:iconS*2};
+  rosaOutboxBox={x:ocx-iconS,y:iy-iconS,w:iconS*2,h:iconS*2};
+  ctx.restore();
+}
 let calMinBox=null,calExpandBox=null,calPickerBox=null,calBounds=null;
 const MONTH_NAMES=["January","February","March","April","May","June","July",
   "August","September","October","November","December"];
@@ -1475,8 +1597,13 @@ function drawMonthGrid(x0,y0,w,fs,monthDays){
     const cy=y0+headerH+wdH+cellH*row+cellH/2;
     const r=Math.min(cellW,cellH)*.38;
     if(daySet.has(d)){
+      // White, not cyan -- Kevin's ask 2026-09-07: the old cyan-at-.32
+      // fill barely registered against the black background. White pops
+      // without borrowing a color that already means something specific
+      // elsewhere (green/yellow/red are usage-severity tiers on this
+      // same face; reusing them here would read as "warning days").
       ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
-      ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.32)`;ctx.fill();
+      ctx.fillStyle=`rgba(${WHITE[0]},${WHITE[1]},${WHITE[2]},.55)`;ctx.fill();
     }
     if(d===today){
       ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
@@ -1537,12 +1664,23 @@ function drawCalendarPanel(dt){
     panelW=W-pad*2;panelH=H-pad*2;x0=pad;y0=pad;
   }else{
     panelW=RAIL.w;
-    panelH=calMini?titleH:Math.min(RAIL.h,contentH);
     x0=RAIL.left;
     // Never sit under the SYSTEM block's expanded CPU-core accordion --
     // both live on the screen's left side, and the accordion's own
     // height changes at click time, not just on resize.
     y0=calMini?RAIL.top:Math.max(RAIL.top,sysStatsBottom+pad*1.4);
+    // Nor under the ROSA cluster in the bottom-left corner -- caught
+    // live 2026-09-07: expanding the CPU accordion pushes y0 down via
+    // sysStatsBottom above, but the panel's own height was still capped
+    // by a FIXED RAIL.h regardless of how far down y0 had already moved,
+    // so a tall-enough push could run the panel's bottom edge straight
+    // into Rosa's corner. Capping height by the actual remaining room
+    // between y0 and rosaClusterTop (never below titleH, so a Calendar
+    // squeezed to the wall still shows at least its title bar) fixes
+    // this the same "yield to a real measured/reserved edge" way as
+    // every other collision on this face, rather than a fixed pixel gap.
+    panelH=calMini?titleH:Math.min(RAIL.h,contentH,
+      Math.max(titleH,rosaClusterTop-y0-pad));
   }
 
   ctx.save();
@@ -1602,7 +1740,10 @@ function drawCalendarPanel(dt){
         ctx.fillStyle=ev.color||`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},1)`;
         ctx.fill();
 
-        ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.65)`;
+        // .65 read too dim next to the near-white summary line below it
+        // -- Kevin's ask 2026-09-07, bumped for contrast without going
+        // full-white (still the secondary line, just legible now).
+        ctx.fillStyle=`rgba(${STEEL[0]},${STEEL[1]},${STEEL[2]},.9)`;
         ctx.font=`${Math.round(lineFs*.85)}px ${UI_FONT}`;
         ctx.fillText(fmtEventTime(ev.start,ev.allDay),textX,ly+lineFs*.55);
 
@@ -1659,6 +1800,7 @@ function frame(dt){
   if(state==="listening")drawListening();else listenHist.length=0;
   if(thinkingAmt>.2)drawThinking(dt,thinkingAmt);else thinkLabel=null;
   drawStateTag(dt,state,alert);
+  drawRosaCluster();
   drawUsage();
   computeRail();
   drawSysStats();
@@ -1709,6 +1851,8 @@ addEventListener("mousemove",e=>{
           ||inBox(calExpandBox,e.clientX,e.clientY)
           ||inBox(calPickerBox,e.clientX,e.clientY)
           ||inBox(cpuBox,e.clientX,e.clientY)
+          ||inBox(rosaQueueBox,e.clientX,e.clientY)
+          ||inBox(rosaOutboxBox,e.clientX,e.clientY)
           ||hitIconBox(e.clientX,e.clientY)
           ||hitDayBox(e.clientX,e.clientY);
   cv.style.cursor=hit?"pointer":"default";
@@ -1729,6 +1873,8 @@ addEventListener("click",e=>{
   if(inBox(calExpandBox,e.clientX,e.clientY)){minPanel.cal=false;toggleFs("cal");return;}
   // the picker opens a pop-out window rather than toggling any panel state
   if(inBox(calPickerBox,e.clientX,e.clientY)){openCalPicker();return;}
+  if(inBox(rosaQueueBox,e.clientX,e.clientY)){openRosaQueue();return;}
+  if(inBox(rosaOutboxBox,e.clientX,e.clientY)){openRosaOutbox();return;}
   // a day cell before the CPU accordion/icon checks below -- same
   // adjacent-controls reasoning as the panel header row above.
   const dayBox=hitDayBox(e.clientX,e.clientY);
