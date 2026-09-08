@@ -581,10 +581,21 @@ function chartIcon(x,y,s,alpha){
   }
   ctx.restore();
 }
-let cpuBox=null,sysCpuExpanded=false,sysIconBoxes=[];
+let cpuBox=null,sysCpuExpanded=false,sysIconBoxes=[],htpcBox=null;
 function openSysDetail(metric){
   const w=window.open(`sys-detail.html?metric=${encodeURIComponent(metric)}`,
                       `sysdetail_${metric}`,"width=560,height=440");
+  if(w)w.focus();
+}
+// Kevin's ask, 2026-09-08: a link from this face to the standalone HTPC
+// monitor dashboard (Prometheus + node_exporter running 24/7 on the HTPC
+// itself, not through this face at all -- see htpc-dashboard on
+// kevin-ms-7885). Hardcoded host:port, same spirit as the hardcoded
+// metric names elsewhere on this face -- a config file for one link
+// nobody else will ever point at a different host isn't worth it.
+function openHtpcDashboard(){
+  const w=window.open("http://kevin-ms-7885:9091/","htpcMonitor",
+                      "width=1200,height=800");
   if(w)w.focus();
 }
 // Bottom edge of the drawn SYSTEM block, in canvas Y -- the CPU row's
@@ -632,6 +643,19 @@ function drawSysStats(){
     }
     y+=fs+4;
   }
+  // HTPC monitor link, drawn as one more row in this same block so it
+  // inherits the block's existing layout/spacing rather than needing its
+  // own. Cyan, not a status tier color (green/amber/red mean something
+  // specific above this row) -- this row is a link, not a metric.
+  y+=Math.round(fs*.3);
+  ctx.font=`${fs}px ${UI_FONT}`;
+  ctx.fillStyle=`rgba(${CYAN[0]},${CYAN[1]},${CYAN[2]},.85)`;
+  const htpcLabel="HTPC MONITOR ↗";
+  ctx.fillText(htpcLabel,textX,y);
+  chartIcon(18+iconS/2,y-fs*.55,iconS,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.65`);
+  const htpcTw=ctx.measureText(htpcLabel).width;
+  htpcBox={x:8,y:y-fs,w:textX-8+htpcTw+16,h:fs+8};
+  y+=fs+4;
   sysStatsBottom=y;
   ctx.restore();
 }
@@ -1853,6 +1877,7 @@ addEventListener("mousemove",e=>{
           ||inBox(cpuBox,e.clientX,e.clientY)
           ||inBox(rosaQueueBox,e.clientX,e.clientY)
           ||inBox(rosaOutboxBox,e.clientX,e.clientY)
+          ||inBox(htpcBox,e.clientX,e.clientY)
           ||hitIconBox(e.clientX,e.clientY)
           ||hitDayBox(e.clientX,e.clientY);
   cv.style.cursor=hit?"pointer":"default";
@@ -1875,6 +1900,7 @@ addEventListener("click",e=>{
   if(inBox(calPickerBox,e.clientX,e.clientY)){openCalPicker();return;}
   if(inBox(rosaQueueBox,e.clientX,e.clientY)){openRosaQueue();return;}
   if(inBox(rosaOutboxBox,e.clientX,e.clientY)){openRosaOutbox();return;}
+  if(inBox(htpcBox,e.clientX,e.clientY)){openHtpcDashboard();return;}
   // a day cell before the CPU accordion/icon checks below -- same
   // adjacent-controls reasoning as the panel header row above.
   const dayBox=hitDayBox(e.clientX,e.clientY);
