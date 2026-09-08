@@ -914,6 +914,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._choose_file()
             elif path == "/mic_primed":
                 self._mic_primed()
+            elif path == "/mic_priming_started":
+                self._mic_priming_started()
             else:
                 self._send(b"not found", "text/plain", 404)
         except ConnectionError:
@@ -973,17 +975,25 @@ class Handler(BaseHTTPRequestHandler):
         self._send(json.dumps({"ok": True, "kind": kind, "value": value}).encode(),
                    "application/json")
 
+    def _mic_priming_started(self):
+        # core.js's micPrime() calls this FIRST, before the actual
+        # getUserMedia() round-trip -- pairs with _mic_primed() below as
+        # a two-phase signal (added 2026-09-08 after a bounded-wait
+        # timeout still wasn't reliable). Lets a waiter (backtalk's own
+        # startup) tell "not relevant this session" (this never shows
+        # up) apart from "genuinely in progress" (this shows up, so the
+        # done signal is coming eventually, however long it takes).
+        (BUS / ".mic_priming_started").write_text(str(time.time()))
+        self._send(json.dumps({"ok": True}).encode(), "application/json")
+
     def _mic_primed(self):
         # core.js's micPrime() calls this the instant it's done grabbing
-        # and releasing the mic on page load. Exists so "Talk to Cipher"
-        # (streamdeck_talk_to_cipher.sh) can wait for the REAL condition
-        # -- mic priming actually finished, macOS's output-ducking window
-        # for it actually closed -- instead of guessing a fixed sleep
-        # long enough to outlast it. Confirmed live 2026-09-08: a fixed
-        # delay isn't reliable once page-load itself is slow under system
-        # load, and this exact mic-hold mechanism was already confirmed
-        # (2026-09-06, a different symptom) to duck backtalk's own output
-        # volume for as long as anything holds an open mic stream.
+        # and releasing the mic on page load -- backtalk's own startup
+        # (main.py, launcher-agnostic) waits on this before speaking the
+        # greeting, since macOS ducks other apps' output volume for as
+        # long as anything holds an open mic stream (confirmed
+        # 2026-09-06 for a different symptom). See
+        # _mic_priming_started() above for the paired first-phase signal.
         (BUS / ".mic_primed").write_text(str(time.time()))
         self._send(json.dumps({"ok": True}).encode(), "application/json")
 
@@ -1052,7 +1062,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(json.dumps({"ok": True, "selected": pks}).encode(),
                    "application/json")
 
-    ROSA_SUBMIT_MAX = 4000
+    # Raised 4000 -> 45000, 2026-09-08: confirmed live this was rejecting
+    # a real, ordinary proofread-length paste with "bad length" -- this
+    # front-door cap had never been updated to match main.py's own
+    # ROSA_QUEUE_MAX_CHARS (40000), which was deliberately checked
+    # against the model's real context window back on 2026-09-07. A few
+    # thousand chars of headroom above that covers the instruction field
+    # and JSON-wrapper overhead this length limit actually measures
+    # (the whole POST body, not just the pasted text on its own).
+    ROSA_SUBMIT_MAX = 45000
 
     def _rosa_submit(self):
         # Queues a job for backtalk's own _rosa_queue_loop to pick up --

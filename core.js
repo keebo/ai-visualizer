@@ -368,14 +368,28 @@ const AV = (() => {
   // starts, instead of popping up mid-reply the first time PTT is pressed
   // and micStart() fires for real.
   async function micPrime() {
+    // Two-phase signal, added 2026-09-08: a caller waiting on this
+    // (backtalk's own startup, see mic_recently_primed()) used to have
+    // only a "done" signal to poll for, forcing it to guess how long to
+    // wait before giving up -- confirmed live that guess fails under
+    // real system load (a real getUserMedia() round-trip measured 10s
+    // one restart, well past the 4s bound in play at the time). This
+    // "started" signal, fired BEFORE the actual permission round-trip,
+    // lets a waiter tell "not relevant this session" (started never
+    // shows up) apart from "genuinely in progress, worth waiting
+    // longer for" (started confirmed, so done is coming eventually) --
+    // a decision grounded in real evidence instead of one blind timer.
+    try {
+      fetch(new URL("mic_priming_started", ROOT).href, { method: "POST" });
+    } catch (e) { /* best effort */ }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(t => t.stop());
     } catch (e) { /* no permission: micStart() will also fail silently later */ }
     // Signal completion either way (success or the catch above) -- a
-    // caller waiting on this (streamdeck_talk_to_cipher.sh) needs to
-    // know priming is DONE, not that it specifically succeeded. Best
-    // effort: if the server isn't reachable yet this just no-ops.
+    // caller waiting on this needs to know priming is DONE, not that
+    // it specifically succeeded. Best effort: if the server isn't
+    // reachable yet this just no-ops.
     try {
       fetch(new URL("mic_primed", ROOT).href, { method: "POST" });
     } catch (e) { /* best effort */ }
