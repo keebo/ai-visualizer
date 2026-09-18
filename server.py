@@ -889,6 +889,33 @@ INBOX_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
              "image/webp": "webp"}
 INBOX_MAX = 25 * 1024 * 1024
 
+# One well-known, long-standing ad-tracker domain -- same one manually
+# verified against Pi-hole 2026-09-09. `dscacheutil` (not `dig`) is
+# deliberate: it goes through the Mac's real system resolver, the same
+# path ordinary apps use, so this catches the exact "dig looks fine but
+# real traffic bypasses Pi-hole" failure mode that motivated this check
+# in the first place -- a raw `dig @pihole-ip` would always look correct
+# even when the system's actual resolver has quietly stopped using it.
+PIHOLE_CHECK_DOMAIN = "doubleclick.net"
+
+
+def _pihole_check() -> dict:
+    try:
+        result = subprocess.run(
+            ["dscacheutil", "-q", "host", "-a", "name", PIHOLE_CHECK_DOMAIN],
+            capture_output=True, text=True, timeout=5)
+    except Exception as e:
+        return {"ok": False, "blocked": None, "error": str(e)}
+    ips = re.findall(r"^ip_address:\s*(\S+)", result.stdout, re.MULTILINE)
+    if not ips:
+        # No A record at all -- can't tell blocked-by-Pi-hole apart from
+        # a real resolution failure, so surface it honestly as unknown
+        # rather than guessing either way.
+        return {"ok": False, "blocked": None, "error": "no answer"}
+    blocked = all(ip == "0.0.0.0" for ip in ips)
+    return {"ok": True, "blocked": blocked, "domain": PIHOLE_CHECK_DOMAIN,
+            "ip": ips[0]}
+
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -1169,6 +1196,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/state":
                 self._send(json.dumps(read_bus()).encode(),
+                           "application/json")
+            elif path == "/pihole_check":
+                self._send(json.dumps(_pihole_check()).encode(),
                            "application/json")
             elif path == "/config":
                 out = {"name": CFG["name"], "badge": CFG["badge"],
