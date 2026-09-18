@@ -581,7 +581,7 @@ function chartIcon(x,y,s,alpha){
   }
   ctx.restore();
 }
-let cpuBox=null,sysCpuExpanded=false,sysIconBoxes=[],htpcBox=null;
+let cpuBox=null,sysCpuExpanded=false,sysIconBoxes=[],htpcBox=null,piholeBox=null;
 function openSysDetail(metric){
   const w=window.open(`sys-detail.html?metric=${encodeURIComponent(metric)}`,
                       `sysdetail_${metric}`,"width=560,height=440");
@@ -594,9 +594,30 @@ function openSysDetail(metric){
 // metric names elsewhere on this face -- a config file for one link
 // nobody else will ever point at a different host isn't worth it.
 function openHtpcDashboard(){
-  const w=window.open("http://kevin-ms-7885:9091/","htpcMonitor",
-                      "width=1200,height=800");
-  if(w)w.focus();
+  // Named target means window.open() just focuses an already-open popup
+  // instead of reloading it -- force a real navigation every click so a
+  // reused window always shows current content, not a stale snapshot
+  // from whenever it was first opened. Cache-bust the URL itself, not
+  // just reassign it -- Safari can silently no-op a location.href
+  // assignment when the string is identical to the current URL. 2026-09-17.
+  const url="http://kevin-ms-7885:9091/?_="+Date.now();
+  const w=window.open(url,"htpcMonitor","width=1200,height=800");
+  if(w){w.location.href=url;w.focus();}
+}
+// Pi-hole one-click check, Kevin's ask 2026-09-09 after the real
+// tailnet-DNS-override bug (see Home Server (HTPC) note) showed that
+// `dig`-style checks can look fine while the Mac's actual system
+// resolver has quietly stopped using Pi-hole -- this hits server.py's
+// /pihole_check, which runs the same dscacheutil-based real-resolver
+// test manually verified that day, so a passing check here means the
+// same thing a manual terminal check would.
+let piholeState="idle"; // idle | checking | blocked | bypassed | error
+function runPiholeCheck(){
+  if(piholeState==="checking")return;
+  piholeState="checking";
+  fetch("/pihole_check").then(r=>r.json()).then(d=>{
+    piholeState = !d.ok ? "error" : (d.blocked ? "blocked" : "bypassed");
+  }).catch(()=>{piholeState="error";});
 }
 // Bottom edge of the drawn SYSTEM block, in canvas Y -- the CPU row's
 // accordion grows this downward when expanded, and the Calendar panel
@@ -655,6 +676,25 @@ function drawSysStats(){
   chartIcon(18+iconS/2,y-fs*.55,iconS,`${CYAN[0]},${CYAN[1]},${CYAN[2]},.65`);
   const htpcTw=ctx.measureText(htpcLabel).width;
   htpcBox={x:8,y:y-fs,w:textX-8+htpcTw+16,h:fs+8};
+  y+=fs+4;
+  // Pi-hole check row, same block/spacing pattern as the HTPC link
+  // above. Color and label reflect piholeState directly -- idle reads
+  // as an inert link (cyan, same as HTPC), a live result reads as a
+  // real status (green/red), matching how the metric rows above use
+  // color for state, not just decoration.
+  const piholeLabels={idle:"PI-HOLE CHECK ↗",checking:"PI-HOLE CHECK…",
+    blocked:"PI-HOLE ✓ BLOCKING",bypassed:"PI-HOLE ✗ BYPASSED",
+    error:"PI-HOLE CHECK — ERROR"};
+  const piholeColors={idle:CYAN,checking:STEEL,blocked:GREEN,
+    bypassed:RED,error:AMBER};
+  const pLabel=piholeLabels[piholeState];
+  const pColor=piholeColors[piholeState];
+  ctx.font=`${fs}px ${UI_FONT}`;
+  ctx.fillStyle=`rgba(${pColor[0]},${pColor[1]},${pColor[2]},.85)`;
+  ctx.fillText(pLabel,textX,y);
+  chartIcon(18+iconS/2,y-fs*.55,iconS,`${pColor[0]},${pColor[1]},${pColor[2]},.65`);
+  const pTw=ctx.measureText(pLabel).width;
+  piholeBox={x:8,y:y-fs,w:textX-8+pTw+16,h:fs+8};
   y+=fs+4;
   sysStatsBottom=y;
   ctx.restore();
@@ -1878,6 +1918,7 @@ addEventListener("mousemove",e=>{
           ||inBox(rosaQueueBox,e.clientX,e.clientY)
           ||inBox(rosaOutboxBox,e.clientX,e.clientY)
           ||inBox(htpcBox,e.clientX,e.clientY)
+          ||inBox(piholeBox,e.clientX,e.clientY)
           ||hitIconBox(e.clientX,e.clientY)
           ||hitDayBox(e.clientX,e.clientY);
   cv.style.cursor=hit?"pointer":"default";
@@ -1901,6 +1942,7 @@ addEventListener("click",e=>{
   if(inBox(rosaQueueBox,e.clientX,e.clientY)){openRosaQueue();return;}
   if(inBox(rosaOutboxBox,e.clientX,e.clientY)){openRosaOutbox();return;}
   if(inBox(htpcBox,e.clientX,e.clientY)){openHtpcDashboard();return;}
+  if(inBox(piholeBox,e.clientX,e.clientY)){runPiholeCheck();return;}
   // a day cell before the CPU accordion/icon checks below -- same
   // adjacent-controls reasoning as the panel header row above.
   const dayBox=hitDayBox(e.clientX,e.clientY);
