@@ -21,5 +21,6 @@ __pycache__/
 .mic_priming_started
 .rosa_queue.json
 streamdeck_debug.log
+inbox/
 # your personal config, created at setup: never tracked, never touched by updates
 ai-visualizer.json
